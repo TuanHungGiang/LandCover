@@ -1,3 +1,9 @@
+import numpy as np
+# pytorch-lightning 2.0.x still uses aliases that NumPy 2 removed (e.g. np.Inf in ModelCheckpoint); restore them
+for _old, _new in (("Inf", "inf"), ("NaN", "nan")):
+    if not hasattr(np, _old):
+        setattr(np, _old, getattr(np, _new))
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
