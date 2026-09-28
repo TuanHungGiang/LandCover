@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+work_dirs/
+pretrain/
+data/
+lightning_logs/
+*.ckpt
+*.pth
+*.safetensors
+*.log
+.ipynb_checkpoints/
