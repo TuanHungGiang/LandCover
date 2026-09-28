@@ -3,8 +3,12 @@ from PIL import Image
 import os
 import numpy as np
 class LoveDA(BaseDataset):
-    def __init__(self,data_root='data/vaihingen', mode='train', transform=None,img_dir='images_png', mask_dir='masks_png', img_suffix='.png', mask_suffix='.png', **kwargs):
+    def __init__(self,data_root='data/vaihingen', mode='train', transform=None,img_dir='images_png', mask_dir='masks_png', img_suffix='.png', mask_suffix='.png', domains=('Urban', 'Rural'), **kwargs):
         super(LoveDA, self).__init__(transform)
+
+        # domains: which LoveDA scenes to load, e.g. ['Urban'] for a cross-domain (Urban -> Rural) experiment
+        self.domains = list(domains)
+        assert len(self.domains) > 0 and all(d in ('Urban', 'Rural') for d in self.domains), self.domains
 
         self.img_dir = img_dir
         self.img_suffix = img_suffix
@@ -36,19 +40,13 @@ class LoveDA(BaseDataset):
         self.num_classes = 7
 
     def get_path(self, data_root, img_dir, mask_dir):
-        urban_img_filename_list = os.listdir(os.path.join(data_root, 'Urban', img_dir))
-        if self.mode != 'test':
-            urban_mask_filename_list = os.listdir(os.path.join(data_root, 'Urban', mask_dir))
-            assert len(urban_img_filename_list) == len(urban_mask_filename_list)
-
-        urban_img_ids = [(str(id.split('.')[0]), 'Urban') for id in urban_img_filename_list]
-
-        rural_img_filename_list = os.listdir(os.path.join(data_root, 'Rural', img_dir))
-        if self.mode != 'test':
-            rural_mask_filename_list = os.listdir(os.path.join(data_root, 'Rural', mask_dir))
-            assert len(rural_img_filename_list) == len(rural_mask_filename_list)
-        rural_img_ids = [(str(id.split('.')[0]), 'Rural') for id in rural_img_filename_list]
-        img_ids = urban_img_ids + rural_img_ids
+        img_ids = []
+        for domain in self.domains:
+            img_filename_list = os.listdir(os.path.join(data_root, domain, img_dir))
+            if self.mode != 'test':
+                mask_filename_list = os.listdir(os.path.join(data_root, domain, mask_dir))
+                assert len(img_filename_list) == len(mask_filename_list)
+            img_ids += [(str(id.split('.')[0]), domain) for id in img_filename_list]
         return img_ids
 
 
