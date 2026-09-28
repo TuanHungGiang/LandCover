@@ -79,7 +79,9 @@ class myTrain(LightningModule):
         result_table = prettytable.PrettyTable()
         result_table.field_names = ['Class', 'OA', 'Precision', 'Recall', 'F1_Score', 'IOU']
 
-        for i in range(len(metrics[0])):
+        # torchmetrics (average='none') returns one value per configured num_classes (8: 7 classes + the
+        # ignore_index slot), one more than class_name (7 names), so bound the loop by class_name instead.
+        for i in range(len(self.cfg.class_name)):
             item = [self.cfg.class_name[i], '--']
             for j in range(len(metrics)):
                 item.append(np.round(metrics[j][i].cpu().numpy(), 4))
