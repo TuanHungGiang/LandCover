@@ -166,12 +166,22 @@ class myTrain(LightningModule):
         self.tr_iou.reset()
 
         # Runs after this epoch's validation (Lightning validates before firing on_train_epoch_end),
-        # so this is the peak GPU memory over train+val combined. Printed directly (visible in the
-        # Kaggle cell output even without TensorBoard) since an OOM crash gives no log at all otherwise.
+        # so this covers train+val combined. Printed directly (visible in the Kaggle cell output even
+        # without TensorBoard) since an OOM crash gives no log at all otherwise.
+        # - allocated: bytes actually held by live tensors.
+        # - reserved: bytes the caching allocator has carved out of the device (>= allocated); an OOM
+        #   happens when the allocator can't find/grow a reserved block, so this -- not allocated -- is
+        #   the number that predicts an OOM. A reserved/allocated gap that grows epoch over epoch is
+        #   fragmentation, which PYTORCH_ALLOC_CONF=expandable_segments:True is meant to reduce.
+        # - free/total: the whole device's headroom (torch.cuda.mem_get_info), the actual OOM boundary.
         if torch.cuda.is_available():
-            peak_gb = torch.cuda.max_memory_allocated() / 1e9
-            print(f"[epoch {self.current_epoch}] peak GPU memory: {peak_gb:.2f} GB")
-            self.log('gpu_mem_gb', peak_gb, on_step=False, on_epoch=True, prog_bar=False)
+            alloc_gb = torch.cuda.max_memory_allocated() / 1e9
+            reserved_gb = torch.cuda.max_memory_reserved() / 1e9
+            free_gb, total_gb = (x / 1e9 for x in torch.cuda.mem_get_info())
+            print(f"[epoch {self.current_epoch}] GPU memory: allocated={alloc_gb:.2f}GB "
+                  f"reserved={reserved_gb:.2f}GB | device free={free_gb:.2f}GB / total={total_gb:.2f}GB")
+            self.log('gpu_mem_alloc_gb', alloc_gb, on_step=False, on_epoch=True, prog_bar=False)
+            self.log('gpu_mem_reserved_gb', reserved_gb, on_step=False, on_epoch=True, prog_bar=False)
             torch.cuda.reset_peak_memory_stats()
 
     def validation_step(self, batch, batch_idx):
