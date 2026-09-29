@@ -30,15 +30,18 @@ ignore_index = 7
 
 # Native LoveDA resolution (1024x1024). ignore_index=7 makes the padding added by RandomSizeAndCrop
 # (when the random scale shrinks the image below the crop size) count as ignored instead of class 0 (building).
+# batch_size=2 OOM'd on a T4 (14.56 GiB) at batch 38/1261 of a real run (profile_head.py didn't catch
+# this: it never builds an optimizer, so it never accounts for AdamW's m/v state over 25.2M params).
+# Dropped to 1 for a real safety margin instead of only relying on PYTORCH_ALLOC_CONF=expandable_segments.
 dataset_config = dict(
     train_mode=dict(
         transform=dict(
             RandomSizeAndCrop={"size": 1024, "crop_nopad": False, "ignore_index": ignore_index},
         ),
-        loader=dict(batch_size=2),
+        loader=dict(batch_size=1),
     ),
-    val_mode=dict(loader=dict(batch_size=2)),
-    test_mode=dict(loader=dict(batch_size=2)),
+    val_mode=dict(loader=dict(batch_size=1)),
+    test_mode=dict(loader=dict(batch_size=1)),
 )
 
 ######################### model_config #########################
