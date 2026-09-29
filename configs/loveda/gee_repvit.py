@@ -17,10 +17,12 @@ _base_ = '../_base_/loveda_config.py'
 epoch = 50
 num_class = 7
 ignore_index = 7
-# Measured on T4 at this exact crop/batch (tools/profile_head.py --backward): backbone+head fp32 1049ms
-# vs fp16 521ms (~2x). Watch the first run's loss for NaN (custom ops: grid_sample, evidential-style
-# entropy) -- the entropy gate itself is forced to fp32 already (rsseg/models/segheads/gee_head.py).
-precision = '16-mixed'
+# fp16 tried and reverted: tools/profile_head.py --amp showed backbone+head fp32 1049ms vs fp16 521ms
+# (~2x), but that raw-autocast benchmark has no GradScaler. The real Trainer(precision='16-mixed') run
+# was measured SLOWER end to end (1.84-1.95 s/it vs 1.30-1.42 s/it fp32, same 40-batch quick config,
+# same T4) -- likely GradScaler's per-step overflow check (a GPU<->CPU sync every iteration) dominates
+# at this batch size over a short run. Left at the default (32) until a longer run is measured to
+# separate a real regression from GradScaler's calibration overhead not amortizing over 40 steps.
 
 # Native LoveDA resolution (1024x1024). ignore_index=7 makes the padding added by RandomSizeAndCrop
 # (when the random scale shrinks the image below the crop size) count as ignored instead of class 0 (building).

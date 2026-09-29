@@ -1,1 +1,2 @@
 from rsseg.models.classifiers.base_classifier import Base_Classifier
+from rsseg.models.classifiers.semantic_prior_classifier import SemanticPrior_Classifier

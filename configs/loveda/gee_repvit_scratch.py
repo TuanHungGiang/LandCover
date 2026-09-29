@@ -17,9 +17,8 @@ _base_ = '../_base_/loveda_config.py'
 epoch = 50
 num_class = 7
 ignore_index = 7
-# fp16 measured ~2x faster than fp32 for this head+backbone combo (tools/profile_head.py, pretrained
-# weights variant); training from scratch (this config) uses the same ops so should benefit similarly.
-precision = '16-mixed'
+# fp16 tried on gee_repvit.py (same head) and reverted: real end-to-end training came out slower,
+# not faster -- see the note in gee_repvit.py. Left at the default (32) here too.
 
 # Native LoveDA resolution (1024x1024). ignore_index=7 makes the padding added by RandomSizeAndCrop
 # (when the random scale shrinks the image below the crop size) count as ignored instead of class 0 (building).
