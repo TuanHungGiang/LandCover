@@ -54,13 +54,14 @@ def main():
     parser.add_argument('--iters', type=int, default=20)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--backward', action='store_true', help='include the backward pass (matches training cost more closely)')
+    parser.add_argument('--batch', type=int, default=None, help='override the config batch size (e.g. 2 to keep memory low)')
     parser.add_argument('--amp', action='store_true', help='time under torch.autocast(fp16) instead of fp32, to compare against a plain run')
     args = parser.parse_args()
 
     cfg = Config.fromfile(args.config)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     size = cfg.dataset_config.train_mode.transform.RandomSizeAndCrop.size
-    bs = cfg.dataset_config.train_mode.loader.batch_size
+    bs = args.batch or cfg.dataset_config.train_mode.loader.batch_size
     hcfg = {k: v for k, v in dict(cfg.model_config.seghead).items() if k != 'type'}
     print(f"device={device} | crop={size} | batch={bs} | backward={args.backward} | amp={args.amp}")
     if args.amp and device != 'cuda':
@@ -100,7 +101,7 @@ def main():
         print(f"{'backbone':<16} params={params:6.2f}M  time/iter={t*1000:8.2f} ms")
 
     bench_backbone()
-    for mode in ('exploit_only', 'explore_only', 'sum', 'gated'):
+    for mode in ('exploit_only', 'explore_only', 'sum', 'gated', 'sparse'):
         bench(mode, GEE_Head(**{**hcfg, 'mode': mode}))
 
 

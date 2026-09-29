@@ -44,8 +44,12 @@ class RVSA_MRAM(nn.Module):
                  num_classes,out_dim=None, qkv_bias=True, qk_scale=None,
                 learnable=True,
                 restart_regression=True,num_deform=None,
-                patch_size = (4,4)):
+                patch_size = (4,4),
+                fix_batch_order=True):
         super().__init__()
+        # fix_batch_order=False reproduces the original LOGCAN++ code, whose repeat()/reshape() calls
+        # mix the batch, head and window axes (see forward); True keeps every tensor in (batch, head/window) order.
+        self.fix_batch_order = fix_batch_order
 
         self.feat_decoder = nn.Conv2d(dim, num_classes, kernel_size=1)
         self.patch_size = patch_size
@@ -224,8 +228,10 @@ class RVSA_MRAM(nn.Module):
         ).reshape(num_predict_total,-1,
                   window_num_h, window_size_h,
                   window_num_w, window_size_w).permute(0,2,4,3,5,1).contiguous().reshape(-1,window_size_w*window_size_h,self.dim // self.num_heads // self.num_deform) #[B*wnh,wh*ww,C]
+        # (b, head)-major like `logcal_key.reshape(B*heads, ...)` above; a plain repeat() is head-major
+        probs_rep = probs.repeat_interleave(num_predict_total // B, dim=0) if self.fix_batch_order             else probs.repeat(num_predict_total // B, 1, 1, 1)
         transform_probs = F.grid_sample(
-            probs.repeat(num_predict_total // B,1,1,1),
+            probs_rep,
             grid=sample_coords, padding_mode='zeros', align_corners=True
         ).reshape(num_predict_total,K,
                   window_num_h, window_size_h,
@@ -234,7 +240,13 @@ class RVSA_MRAM(nn.Module):
 
         #计算局部类中心作为key
         logcal_center = torch.matmul(transform_probs.permute(0,2,1),transform_x) #[B,K,C]
-        logcal_center = logcal_center.reshape(B * window_num_w * window_num_h,self.num_heads,K,-1)
+        if self.fix_batch_order:
+            # rows are ordered (b, head, window); the attention below wants (b, window) x head
+            assert self.num_deform == 1
+            P = window_num_h * window_num_w
+            logcal_center = logcal_center.reshape(B, self.num_heads, P, K, -1).permute(0, 2, 1, 3, 4)                 .reshape(B * P, self.num_heads, K, -1)
+        else:
+            logcal_center = logcal_center.reshape(B * window_num_w * window_num_h,self.num_heads,K,-1)
         query = x.reshape(B,C,
                   window_num_h, window_size_h,
                   window_num_w, window_size_w).permute(0,2,4,3,5,1).contiguous().reshape(-1,window_size_w*window_size_h,C) #[B*wnh,wh*ww,C]
@@ -247,7 +259,8 @@ class RVSA_MRAM(nn.Module):
             self.num_heads,C // self.num_heads,
             window_size_w*window_size_h) #[B,nds,c,wh*ww]
 
-        value = global_center.repeat(window_num_w * window_num_h,1,1)
+        # rows must be (b, window)-major like `query`; repeat() would make them window-major
+        value = global_center.repeat_interleave(window_num_w * window_num_h, dim=0) if self.fix_batch_order             else global_center.repeat(window_num_w * window_num_h,1,1)
         value = self.v(value).permute(0,2,1).contiguous().reshape(
             B * window_num_w * window_num_h,self.num_heads,
             C // self.num_heads,K)#[B,nds,c,k]

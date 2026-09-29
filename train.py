@@ -18,6 +18,9 @@ import numpy as np
 
 import argparse
 import ast
+import json
+import os
+import time
 from rsseg.models.build_model import build_model
 from rsseg.datasets import build_dataloader
 from rsseg.optimizers import build_optimizer
@@ -58,6 +61,7 @@ class myTrain(LightningModule):
         
         self.cfg = cfg
         self.net = build_model(cfg.model_config)
+        self.params_M = sum(p.numel() for p in self.net.parameters()) / 1e6
         self.loss = build_loss(cfg.loss_config)
 
         self.loss.to("cuda")
@@ -144,7 +148,7 @@ class myTrain(LightningModule):
         total = getattr(self.trainer, 'num_training_batches', '?')
         losses = ' '.join(f'{k}={float(v):.3f}' for k, v in all_loss.items() if k != 'total_loss')
         gates = getattr(self.net.seghead, '_gate_means', [])
-        gate_str = 'gate=[' + ','.join(f'{g:.3f}' for g in gates if g is not None) + ']' if any(g is not None for g in gates) else ''
+        gate_str = 'gate=[' + ','.join(f'{float(g):.3f}' for g in gates if g is not None) + ']' if any(g is not None for g in gates) else ''
         mem = f'mem={torch.cuda.memory_allocated()/1e9:.2f}GB' if torch.cuda.is_available() else ''
         print(f"[ep {self.current_epoch}][batch {batch_idx}/{total}] "
               f"total_loss={float(all_loss['total_loss']):.3f} ({losses}) {gate_str} {mem}", flush=True)
@@ -283,7 +287,17 @@ class myTrain(LightningModule):
                'val_miou': np.mean([item.cpu() for item in metrics[3][self.eval_label_id_left: self.eval_label_id_right]])}
         
         self.output(metrics, log, 'val')
-        
+
+        # one JSON line per validation, read by tools/run_ablation.py to build the comparison table
+        if self.trainer.is_global_zero and not self.trainer.sanity_checking:
+            n_cls = len(self.cfg.class_name)
+            os.makedirs(self.cfg.exp_name, exist_ok=True)
+            with open(self.cfg.exp_name + "/val_metrics.jsonl", "a") as f:
+                f.write(json.dumps(dict(
+                    epoch=self.current_epoch, time=time.time(), params_M=self.params_M,
+                    val_miou=float(log['val_miou']), val_oa=float(log['val_oa']),
+                    iou=[float(v) for v in metrics[3][:n_cls].cpu()])) + "\n")
+
         for key, value in zip(log.keys(), log.values()):
             self.log(key, value, on_step=False, on_epoch=True, prog_bar=False)
 

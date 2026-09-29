@@ -27,16 +27,22 @@ class SceneExplore(nn.Module):
         self.v = nn.Linear(dim, dim)
         self.proj = nn.Linear(dim, dim)
 
+    def tokens(self, x):
+        return self.pool(x).flatten(2).transpose(1, 2) + self.pos            # B, M, C
+
+    def attend(self, q_in, tokens):
+        """q_in: (B, N, C) query pixels, tokens: (B, M, C) pooled scene tokens -> (B, N, C)."""
+        B, N, C = q_in.shape
+        h = self.num_heads
+        q, k, v = self.q(q_in), self.k(tokens), self.v(tokens)
+        q, k, v = [t.reshape(B, -1, h, C // h).transpose(1, 2) for t in (q, k, v)]
+        out = F.scaled_dot_product_attention(q, k, v)                         # B, h, N, C/h
+        return self.proj(out.transpose(1, 2).reshape(B, N, C))
+
     def forward(self, x):
         B, C, H, W = x.shape
-        h = self.num_heads
-        tokens = self.pool(x).flatten(2).transpose(1, 2) + self.pos          # B, M, C
-        q = self.q(x.flatten(2).transpose(1, 2))                              # B, HW, C
-        k, v = self.k(tokens), self.v(tokens)
-        q, k, v = [t.reshape(B, -1, h, C // h).transpose(1, 2) for t in (q, k, v)]
-        out = F.scaled_dot_product_attention(q, k, v)                         # B, h, HW, C/h
-        out = out.transpose(1, 2).reshape(B, H * W, C)
-        return self.proj(out).transpose(1, 2).reshape(B, C, H, W)
+        out = self.attend(x.flatten(2).transpose(1, 2), self.tokens(x))      # every pixel is a query
+        return out.transpose(1, 2).reshape(B, C, H, W)
 
 
 def entropy_gate(logits):
@@ -54,6 +60,9 @@ class GEE_Head(nn.Module):
         'sum'          0.5 * exploit + 0.5 * explore (ablation: no gate)
         'exploit_only' class-center attention only (LoGCAN++-style decoder, ablation baseline)
         'explore_only' scene-token attention only (ablation)
+        'sparse'       exploit everywhere; the scene-token attention is only run for the `sparse_ratio`
+                       fraction of pixels with the highest classifier entropy (residual add), so the
+                       explore cost scales with the number of uncertain pixels, not with H*W
     """
 
     def __init__(self,
@@ -63,10 +72,12 @@ class GEE_Head(nn.Module):
                  num_heads,
                  patch_size,
                  explore_grid=8,
-                 mode='gated'):
+                 mode='gated',
+                 sparse_ratio=0.25):
         super().__init__()
-        assert mode in ('gated', 'sum', 'exploit_only', 'explore_only')
+        assert mode in ('gated', 'sum', 'exploit_only', 'explore_only', 'sparse')
         self.mode = mode
+        self.sparse_ratio = sparse_ratio
         C = transform_channel
 
         self.bottleneck = nn.ModuleList([conv_3x3(c, C) for c in in_channel])
@@ -80,14 +91,31 @@ class GEE_Head(nn.Module):
                 for _ in in_channel])
         if mode != 'exploit_only':
             self.explore = nn.ModuleList([SceneExplore(C, num_heads, explore_grid) for _ in in_channel])
-            self.explore_fuse = nn.ModuleList([conv_3x3(C * 2, C) for _ in in_channel])
+            if mode != 'sparse':
+                self.explore_fuse = nn.ModuleList([conv_3x3(C * 2, C) for _ in in_channel])
 
         self.catconv = nn.ModuleList([conv_3x3(C * 2, C) for _ in range(len(in_channel) - 1)])
         self.final = conv_3x3(C, C)
 
+    def _sparse_stage(self, i, feat, logits, global_center):
+        out = self.exploit[i](feat, global_center)
+        B, C, H, W = feat.shape
+        uncertainty = 1. - entropy_gate(logits)                                   # B, 1, H, W
+        k = max(1, int(self.sparse_ratio * H * W))
+        idx = uncertainty.flatten(1).topk(k, dim=1).indices                       # B, k (most uncertain pixels)
+        idx = idx.unsqueeze(-1).expand(-1, -1, C)
+        x_flat = feat.flatten(2).transpose(1, 2)                                  # B, HW, C
+        explore = self.explore[i]
+        ctx = explore.attend(x_flat.gather(1, idx), explore.tokens(feat))         # B, k, C
+        delta = torch.zeros_like(x_flat).scatter(1, idx, ctx.to(x_flat.dtype))    # zero at confident pixels
+        self._gate_means[i] = (1. - uncertainty.mean()).detach()                  # mean confidence, for the log
+        return out + delta.transpose(1, 2).reshape(B, C, H, W)
+
     def _stage(self, i, feat, logits, global_center):
         if self.mode == 'exploit_only':
             return self.exploit[i](feat, global_center)
+        if self.mode == 'sparse':
+            return self._sparse_stage(i, feat, logits, global_center)
 
         ctx = self.explore_fuse[i](torch.cat([feat, self.explore[i](feat)], dim=1))
         if self.mode == 'explore_only':
@@ -101,7 +129,7 @@ class GEE_Head(nn.Module):
             # 1 = fully on the class-prior (exploit) path, 0 = fully on the scene (explore) path.
             # Exposed so train.py can log it: a gate stuck near 0 or 1 for every stage means it
             # is not actually routing anything, which the loss curve alone would not show.
-            self._gate_means[i] = float(g.mean())
+            self._gate_means[i] = g.mean().detach()   # stays a GPU tensor: float() here forced a sync every stage
         return g * exploit + (1. - g) * ctx
 
     def forward(self, x_list):
