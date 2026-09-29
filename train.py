@@ -16,6 +16,7 @@ import prettytable
 import numpy as np
 
 import argparse
+import ast
 from rsseg.models.build_model import build_model
 from rsseg.datasets import build_dataloader
 from rsseg.optimizers import build_optimizer
@@ -24,9 +25,30 @@ from utils.config import Config
 
 seed_everything(2025, workers=True)
 
+def parse_cfg_overrides(pairs):
+    """--set key.path=value, e.g. --set dataset_config.train_mode.loader.batch_size=4
+    Dotted key -> Config.merge_from_dict (already in utils/config.py, mmcv-style deep merge).
+    Value is parsed with ast.literal_eval (4 -> int, 0.5 -> float, "'x'" -> str, [1,2] -> list, ...);
+    left as a plain string if that fails, so batch_size=4 and mode=gated both just work.
+    """
+    options = {}
+    for pair in pairs or []:
+        key, sep, value = pair.partition('=')
+        if not sep:
+            raise ValueError(f"--set expects key=value, got: {pair!r}")
+        try:
+            value = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            pass
+        options[key] = value
+    return options
+
 def get_args():
     parser = argparse.ArgumentParser('rsseg: train model')
     parser.add_argument("-c", "--config", type=str, default="configs/docnet.py")
+    parser.add_argument("--set", nargs="+", default=None, metavar="key.path=value",
+                        help="Override config values without editing a file, e.g. "
+                             "--set dataset_config.train_mode.loader.batch_size=4 model_config.seghead.mode=exploit_only")
     return parser.parse_args()
 
 class myTrain(LightningModule):
@@ -228,6 +250,8 @@ class myTrain(LightningModule):
 if __name__ == "__main__":
     args = get_args()
     cfg = Config.fromfile(args.config)
+    if args.set:
+        cfg.merge_from_dict(parse_cfg_overrides(args.set))
     print(cfg)
     model = myTrain(cfg)
 
