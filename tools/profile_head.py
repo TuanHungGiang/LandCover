@@ -54,6 +54,7 @@ def main():
     parser.add_argument('--iters', type=int, default=20)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--backward', action='store_true', help='include the backward pass (matches training cost more closely)')
+    parser.add_argument('--amp', action='store_true', help='time under torch.autocast(fp16) instead of fp32, to compare against a plain run')
     args = parser.parse_args()
 
     cfg = Config.fromfile(args.config)
@@ -61,7 +62,12 @@ def main():
     size = cfg.dataset_config.train_mode.transform.RandomSizeAndCrop.size
     bs = cfg.dataset_config.train_mode.loader.batch_size
     hcfg = {k: v for k, v in dict(cfg.model_config.seghead).items() if k != 'type'}
-    print(f"device={device} | crop={size} | batch={bs} | backward={args.backward}")
+    print(f"device={device} | crop={size} | batch={bs} | backward={args.backward} | amp={args.amp}")
+    if args.amp and device != 'cuda':
+        print("--amp has no effect on CPU, ignoring")
+
+    def autocast():
+        return torch.autocast('cuda', dtype=torch.float16, enabled=args.amp and device == 'cuda')
 
     backbone = build_backbone(cfg).to(device).train()
     x = torch.randn(bs, 3, size, size, device=device)
@@ -75,7 +81,8 @@ def main():
 
         def step():
             feats = [f.clone().requires_grad_(args.backward) for f in feats_ref]
-            out = module(feats)
+            with autocast():
+                out = module(feats)
             if args.backward:
                 sum(o.float().sum() for o in out).backward()
         t = timed(step, args.iters, args.warmup, device)
@@ -84,7 +91,8 @@ def main():
     def bench_backbone():
         def step():
             xi = x.clone().requires_grad_(args.backward)
-            out = backbone(xi)
+            with autocast():
+                out = backbone(xi)
             if args.backward:
                 sum(o.float().sum() for o in out).backward()
         t = timed(step, args.iters, args.warmup, device)
