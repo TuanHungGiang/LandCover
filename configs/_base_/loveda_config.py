@@ -59,7 +59,15 @@ metric_cfg2 = dict(
             ignore_index = 7
         )
 
-eval_label_id_left = 0
-eval_label_id_right = 6
+# Validation on 1024x1024 images is run as 512x512 tiles (the training crop size) and stitched back:
+# stride == crop -> the tiles do not overlap (1024 = 2 x 512 exactly); a smaller stride (e.g. 256)
+# makes tiles overlap and the logits of overlapping pixels are averaged. Set to None to run whole images.
+val_sliding = dict(crop=512, stride=512)
 
-class_name = ['building', 'road', 'water', 'barren', 'forest', 'agricultural', 'background']
+# mIoU is averaged over ALL 7 classes (Eq. 32 of the SCSM paper); index 7 is the ignored no-data slot.
+eval_label_id_left = 0
+eval_label_id_right = 7
+
+# Label order after loveda_dataset.py's `mask - 1` shift of the official LoveDA masks
+# (raw: 1 background, 2 building, 3 road, 4 water, 5 barren, 6 forest, 7 agriculture; 0 = no-data -> 7).
+class_name = ['background', 'building', 'road', 'water', 'barren', 'forest', 'agricultural']

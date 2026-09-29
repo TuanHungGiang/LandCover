@@ -263,6 +263,8 @@ class RepViT(nn.Module):
             x = f(x)
             if i in self.out_indices:
                 outs.append(x)
+            if outs and i >= max(self.out_indices):
+                break   # later layers would only be computed and thrown away
         assert(len(outs) == 4)
         return outs
 

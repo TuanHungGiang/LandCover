@@ -92,10 +92,10 @@ if __name__ == "__main__":
                test_iou.compute()]
 
     total_metrics = [test_oa.compute().cpu().numpy(),
-                     np.mean([item.cpu() for item in metrics[0][cfg.eval_label_id_left: cfg.eval_label_id_right] if item > 0]),
-                     np.mean([item.cpu() for item in metrics[1][cfg.eval_label_id_left: cfg.eval_label_id_right] if item > 0]),
-                     np.mean([item.cpu() for item in metrics[2][cfg.eval_label_id_left: cfg.eval_label_id_right] if item > 0]),
-                     np.mean([item.cpu() for item in metrics[3][cfg.eval_label_id_left: cfg.eval_label_id_right] if item > 0])]
+                     np.mean([item.cpu() for item in metrics[0][cfg.eval_label_id_left: cfg.eval_label_id_right]]),
+                     np.mean([item.cpu() for item in metrics[1][cfg.eval_label_id_left: cfg.eval_label_id_right]]),
+                     np.mean([item.cpu() for item in metrics[2][cfg.eval_label_id_left: cfg.eval_label_id_right]]),
+                     np.mean([item.cpu() for item in metrics[3][cfg.eval_label_id_left: cfg.eval_label_id_right]])]
 
     result_table = prettytable.PrettyTable()
     result_table.field_names = ['Class', 'OA', 'Precision', 'Recall', 'F1_Score', 'IOU']

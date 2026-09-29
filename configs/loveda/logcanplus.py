@@ -1,6 +1,6 @@
 
 ######################## base_config #########################
-gpus = [1]
+gpus = [0, 1]   # DDP on both GPUs; loader.batch_size is per GPU (8 x 2 = 16)
 save_top_k = 1
 save_last = True
 check_val_every_n_epoch = 1

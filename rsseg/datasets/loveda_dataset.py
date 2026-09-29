@@ -28,13 +28,13 @@ class LoveDA(BaseDataset):
 
         #RGB
         self.color_map = {
-            'building' : np.array([255, 0, 0]),  # label 0
-            'road' : np.array([255, 255, 0]),  # label 1
-            'water' : np.array([0, 0, 255]),  # label 2
-            'barren' : np.array([159, 129, 183]),  # label 3
-            'forest' : np.array([0, 255, 0]),  # label 4
-            'agricultural' : np.array([255, 195, 128]),  # label 5
-            'background' : np.array([255, 255, 255]),  # label 6
+            'background' : np.array([255, 255, 255]),  # label 0
+            'building' : np.array([255, 0, 0]),  # label 1
+            'road' : np.array([255, 255, 0]),  # label 2
+            'water' : np.array([0, 0, 255]),  # label 3
+            'barren' : np.array([159, 129, 183]),  # label 4
+            'forest' : np.array([0, 255, 0]),  # label 5
+            'agricultural' : np.array([255, 195, 128]),  # label 6
         }
 
         self.num_classes = 7

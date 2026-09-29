@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.strategies import DDPStrategy
 import torchmetrics
 import prettytable
 import numpy as np
@@ -114,9 +115,12 @@ class myTrain(LightningModule):
         total.insert(0, 'total')
         result_table.add_row(total)
 
+        # metrics are already synced across ranks by compute(); print/write once
+        if not self.trainer.is_global_zero:
+            return
         print(result_table)
 
-        file_name = cfg.exp_name + "/train_metric.txt"
+        file_name = self.cfg.exp_name + "/train_metric.txt"
         f = open(file_name,"a")
         f.write('epoch:{}/{} {}\n'.format(self.current_epoch, self.cfg.epoch, mode))
         f.write(str(result_table)+'\n')
@@ -161,7 +165,8 @@ class myTrain(LightningModule):
         self.tr_iou(pred, mask)
 
         for loss_name in all_loss:
-            self.log(loss_name, all_loss[loss_name], on_step=False,on_epoch=True,prog_bar=True)
+            self.log(f'train_{loss_name}', all_loss[loss_name], on_step=False, on_epoch=True, prog_bar=True,
+                     sync_dist=True, batch_size=image.shape[0])
         return all_loss['total_loss']
 
     def on_train_epoch_end(self):
@@ -171,10 +176,10 @@ class myTrain(LightningModule):
                    self.tr_iou.compute()]
         
         log = {'tr_oa': float(self.tr_oa.compute().cpu()),
-               'tr_prec': np.mean([item.cpu() for item in metrics[0][self.eval_label_id_left: self.eval_label_id_right] if item > 0]),
-               'tr_recall': np.mean([item.cpu() for item in metrics[1][self.eval_label_id_left: self.eval_label_id_right] if item > 0]),
-               'tr_f1': np.mean([item.cpu() for item in metrics[2][self.eval_label_id_left: self.eval_label_id_right] if item > 0]),
-               'tr_miou': np.mean([item.cpu() for item in metrics[3][self.eval_label_id_left: self.eval_label_id_right] if item > 0])}
+               'tr_prec': np.mean([item.cpu() for item in metrics[0][self.eval_label_id_left: self.eval_label_id_right]]),
+               'tr_recall': np.mean([item.cpu() for item in metrics[1][self.eval_label_id_left: self.eval_label_id_right]]),
+               'tr_f1': np.mean([item.cpu() for item in metrics[2][self.eval_label_id_left: self.eval_label_id_right]]),
+               'tr_miou': np.mean([item.cpu() for item in metrics[3][self.eval_label_id_left: self.eval_label_id_right]])}
         
         # self.output(metrics, log, 'train')
         
@@ -206,13 +211,53 @@ class myTrain(LightningModule):
             self.log('gpu_mem_reserved_gb', reserved_gb, on_step=False, on_epoch=True, prog_bar=False)
             torch.cuda.reset_peak_memory_stats()
 
+    @staticmethod
+    def _tile_starts(size, crop, stride):
+        # Window origins along one axis. The last window is shifted back so it ends exactly at `size`
+        # (it then overlaps its neighbour more than `stride` implies) instead of running past the image.
+        if size <= crop:
+            return [0]
+        starts = list(range(0, size - crop + 1, stride))
+        if starts[-1] != size - crop:
+            starts.append(size - crop)
+        return starts
+
+    def _val_forward(self, image, mask):
+        """Returns (main logits at full image size, loss dict).
+
+        cfg.val_sliding = dict(crop, stride): the image is cut into crop x crop tiles every `stride`
+        pixels, each tile goes through the network on its own (same input size as training), and the
+        tile logits are summed into a full-size buffer that is divided by how many tiles covered each
+        pixel. stride == crop -> no overlap (1024 = 2 x 512 tiles per axis); stride < crop -> overlapping
+        pixels get the average of the tile predictions. The loss is the mean of the per-tile losses.
+        """
+        sw = getattr(self.cfg, 'val_sliding', None)
+        if not sw:
+            preds = self(image)
+            return preds[0], self.loss(preds, mask)
+
+        crop, stride = sw['crop'], sw['stride']
+        B, _, H, W = image.shape
+        logits, count, loss_sum, n_tiles = None, image.new_zeros(1, 1, H, W), None, 0
+        for y in self._tile_starts(H, crop, stride):
+            for x in self._tile_starts(W, crop, stride):
+                preds = self(image[:, :, y:y + crop, x:x + crop])
+                tile_loss = self.loss(preds, mask[:, y:y + crop, x:x + crop])
+                if logits is None:
+                    logits = preds[0].new_zeros(B, preds[0].shape[1], H, W)
+                    loss_sum = {k: 0. for k in tile_loss}
+                logits[:, :, y:y + crop, x:x + crop] += preds[0]
+                count[:, :, y:y + crop, x:x + crop] += 1
+                for k, v in tile_loss.items():
+                    loss_sum[k] = loss_sum[k] + v
+                n_tiles += 1
+        return logits / count, {k: v / n_tiles for k, v in loss_sum.items()}
+
     def validation_step(self, batch, batch_idx):
         image, mask = batch[0], batch[1]
-        preds = self(image)
-        all_loss = self.loss(preds, mask)
-        self._log_gate_stats()
+        logits, all_loss = self._val_forward(image, mask)
 
-        pred = preds[0].argmax(dim=1)
+        pred = logits.argmax(dim=1)
 
         self.val_oa(pred, mask)
         self.val_prec(pred, mask)
@@ -221,7 +266,8 @@ class myTrain(LightningModule):
         self.val_iou(pred, mask)
 
         for loss_name in all_loss:
-            self.log(loss_name, all_loss[loss_name], on_step=False,on_epoch=True,prog_bar=True)
+            self.log(f'val_{loss_name}', all_loss[loss_name], on_step=False, on_epoch=True, prog_bar=True,
+                     sync_dist=True, batch_size=image.shape[0])
         return all_loss['total_loss']
 
     def on_validation_epoch_end(self):
@@ -231,10 +277,10 @@ class myTrain(LightningModule):
                    self.val_iou.compute()]
 
         log = {'val_oa': float(self.val_oa.compute().cpu()),
-               'val_prec': np.mean([item.cpu() for item in metrics[0][self.eval_label_id_left: self.eval_label_id_right] if item > 0]),
-               'val_recall': np.mean([item.cpu() for item in metrics[1][self.eval_label_id_left: self.eval_label_id_right] if item > 0]),
-               'val_f1': np.mean([item.cpu() for item in metrics[2][self.eval_label_id_left: self.eval_label_id_right] if item > 0]),
-               'val_miou': np.mean([item.cpu() for item in metrics[3][self.eval_label_id_left: self.eval_label_id_right] if item > 0])}
+               'val_prec': np.mean([item.cpu() for item in metrics[0][self.eval_label_id_left: self.eval_label_id_right]]),
+               'val_recall': np.mean([item.cpu() for item in metrics[1][self.eval_label_id_left: self.eval_label_id_right]]),
+               'val_f1': np.mean([item.cpu() for item in metrics[2][self.eval_label_id_left: self.eval_label_id_right]]),
+               'val_miou': np.mean([item.cpu() for item in metrics[3][self.eval_label_id_left: self.eval_label_id_right]])}
         
         self.output(metrics, log, 'val')
         
@@ -262,7 +308,8 @@ if __name__ == "__main__":
                               filename = '{epoch:d}',
                               monitor = cfg.monitor,
                               mode = 'max',
-                              save_top_k = cfg.save_top_k)
+                              save_top_k = cfg.save_top_k,
+                              save_last = getattr(cfg, 'save_last', False))
     
     # refresh_rate=1 (one tqdm redraw per batch) floods a Jupyter/Kaggle cell: without a real TTY, tqdm
     # can't overwrite the same line with \r, so every redraw becomes a new appended line -- thousands of
@@ -283,7 +330,13 @@ if __name__ == "__main__":
     # reach a larger EFFECTIVE batch size without the peak memory of a bigger real batch (e.g.
     # batch_size=1 + accumulate_grad_batches=4 trains like batch_size=4 but only ever holds one
     # sample's activations at a time -- the OOM at batch_size=2 never needed to happen this way)
+    # cfg.gpus with more than one id -> DDP, one process per GPU. loader.batch_size is then PER GPU, so
+    # the effective batch is batch_size * len(gpus) (8 x 2 = 16, the SCSM/LOGCAN++ setting).
+    # find_unused_parameters: the RepViT layers after the last out_index take no part in the loss.
+    multi_gpu = len(cfg.gpus) > 1
     trainer = Trainer(max_epochs = cfg.epoch,
+                      strategy = DDPStrategy(find_unused_parameters=True) if multi_gpu else 'auto',
+                      sync_batchnorm = multi_gpu,
                       precision = getattr(cfg, 'precision', 32),
                       limit_train_batches = getattr(cfg, 'limit_train_batches', 1.0),
                       limit_val_batches = getattr(cfg, 'limit_val_batches', 1.0),
