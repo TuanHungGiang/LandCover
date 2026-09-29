@@ -255,11 +255,15 @@ if __name__ == "__main__":
     
     
     # optional config keys (defaults keep the original behaviour): precision='16-mixed',
-    # limit_train_batches / limit_val_batches for quick timing runs
+    # limit_train_batches / limit_val_batches for quick timing runs, accumulate_grad_batches to
+    # reach a larger EFFECTIVE batch size without the peak memory of a bigger real batch (e.g.
+    # batch_size=1 + accumulate_grad_batches=4 trains like batch_size=4 but only ever holds one
+    # sample's activations at a time -- the OOM at batch_size=2 never needed to happen this way)
     trainer = Trainer(max_epochs = cfg.epoch,
                       precision = getattr(cfg, 'precision', 32),
                       limit_train_batches = getattr(cfg, 'limit_train_batches', 1.0),
                       limit_val_batches = getattr(cfg, 'limit_val_batches', 1.0),
+                      accumulate_grad_batches = getattr(cfg, 'accumulate_grad_batches', 1),
                       callbacks = callbacks,
                       logger = logger,
                       enable_model_summary = True,
