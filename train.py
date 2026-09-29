@@ -240,7 +240,12 @@ if __name__ == "__main__":
                               mode = 'max',
                               save_top_k = cfg.save_top_k)
     
-    pbar = TQDMProgressBar(refresh_rate=1)
+    # refresh_rate=1 (one tqdm redraw per batch) floods a Jupyter/Kaggle cell: without a real TTY, tqdm
+    # can't overwrite the same line with \r, so every redraw becomes a new appended line -- thousands of
+    # them over a ~2500-batch epoch, which bogs down the browser (the kernel keeps training fine, only
+    # the page rendering suffers). A higher rate keeps the bar useful without spamming the page/log file;
+    # the custom per-N-step print in training_step (print_every_n_steps) is unaffected by this.
+    pbar = TQDMProgressBar(refresh_rate=getattr(cfg, 'progress_bar_refresh_rate', 50))
 
     callbacks = [ckpt_cb, pbar, lr_monitor]
 
