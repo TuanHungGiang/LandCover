@@ -104,15 +104,31 @@ class myTrain(LightningModule):
         # GEE_Head (mode='gated'/'sum') exposes _gate_means: 1 = fully exploit (class-prior attention),
         # 0 = fully explore (scene attention). A gate stuck near 0 or 1 at every stage means it is not
         # actually routing anything -- worth watching for, since the loss curve alone would not show it.
+        # prog_bar=True so it is visible live on the tqdm bar, not only in TensorBoard after the epoch.
         for i, g in enumerate(getattr(self.net.seghead, '_gate_means', [])):
             if g is not None:
-                self.log(f'gate_stage{i}', g, on_step=False, on_epoch=True, prog_bar=False)
+                self.log(f'gate_stage{i}', g, on_step=False, on_epoch=True, prog_bar=True)
+
+    def _print_progress(self, batch_idx, all_loss):
+        # A plain print() every N steps, independent of the tqdm bar: readable with `tail` on a log
+        # file from a background (nohup) run, and not lost once a long epoch's bar is overwritten.
+        every = getattr(self.cfg, 'print_every_n_steps', 100)
+        if every <= 0 or batch_idx % every != 0:
+            return
+        total = getattr(self.trainer, 'num_training_batches', '?')
+        losses = ' '.join(f'{k}={float(v):.3f}' for k, v in all_loss.items() if k != 'total_loss')
+        gates = getattr(self.net.seghead, '_gate_means', [])
+        gate_str = 'gate=[' + ','.join(f'{g:.3f}' for g in gates if g is not None) + ']' if any(g is not None for g in gates) else ''
+        mem = f'mem={torch.cuda.memory_allocated()/1e9:.2f}GB' if torch.cuda.is_available() else ''
+        print(f"[ep {self.current_epoch}][batch {batch_idx}/{total}] "
+              f"total_loss={float(all_loss['total_loss']):.3f} ({losses}) {gate_str} {mem}", flush=True)
 
     def training_step(self, batch, batch_idx):
         image, mask = batch[0], batch[1]
         preds = self(image)
         all_loss = self.loss(preds, mask)
         self._log_gate_stats()
+        self._print_progress(batch_idx, all_loss)
 
         pred = preds[0].argmax(dim=1)
 
