@@ -14,7 +14,11 @@ test_ckpt_path = None
 ######################## dataset_config ######################
 exp_name = "work_dirs/gee_repvit_loveda"
 _base_ = '../_base_/loveda_config.py'
-epoch = 50
+# Measured fp32 on T4: ~1.35 s/it train (1261 batches/epoch) + ~5 min val (835 batches) =~ 34 min/epoch,
+# so 50 epochs would need ~28h. 15 epochs =~ 8.4h, fits one ~12h Kaggle session with a buffer for
+# setup/checkpointing. Raise this (and resume from resume_ckpt_path in a later session) once H1/H2
+# say the design is worth a fully-trained run; 15 epochs is enough to get a real checkpoint to test on.
+epoch = 15
 num_class = 7
 ignore_index = 7
 # fp16 tried and reverted: tools/profile_head.py --amp showed backbone+head fp32 1049ms vs fp16 521ms
