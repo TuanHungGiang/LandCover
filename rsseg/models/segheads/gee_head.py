@@ -94,10 +94,18 @@ class GEE_Head(nn.Module):
             return ctx
 
         exploit = self.exploit[i](feat, global_center)
-        g = 0.5 if self.mode == 'sum' else entropy_gate(logits).to(feat.dtype)
+        if self.mode == 'sum':
+            g = 0.5
+        else:
+            g = entropy_gate(logits).to(feat.dtype)
+            # 1 = fully on the class-prior (exploit) path, 0 = fully on the scene (explore) path.
+            # Exposed so train.py can log it: a gate stuck near 0 or 1 for every stage means it
+            # is not actually routing anything, which the loss curve alone would not show.
+            self._gate_means[i] = float(g.mean())
         return g * exploit + (1. - g) * ctx
 
     def forward(self, x_list):
+        self._gate_means = [None] * 4
         f = [b(x) for b, x in zip(self.bottleneck, x_list)]      # f[0] stride 4 ... f[3] stride 32
 
         logits = [None] * 4

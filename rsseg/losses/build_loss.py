@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from collections import Counter
 from rsseg.losses.ce_loss import CELoss
 class myLoss(nn.Module):
     def __init__(self, loss_name=['CELoss'], loss_weight=[1.0], ignore_index=255, reduction='mean', **kwargs):
@@ -10,17 +11,28 @@ class myLoss(nn.Module):
         self.loss = list()
         for _loss in loss_name:
             self.loss.append(eval(_loss)(ignore_index,**kwargs))
-    
+
+        # loss_name is also the class name (eval'd above), so a config using e.g. 5x 'CELoss' for deep
+        # supervision (or LOGCAN++'s 2x 'CELoss') used to silently sum them under one log key, hiding
+        # per-stage behaviour. Give each occurrence its own logging key (CELoss_0, CELoss_1, ...) without
+        # touching loss_name itself; a name that only appears once keeps its plain name.
+        counts = Counter(loss_name)
+        seen = Counter()
+        self.log_keys = []
+        for name in loss_name:
+            if counts[name] == 1:
+                self.log_keys.append(name)
+            else:
+                self.log_keys.append(f"{name}_{seen[name]}")
+                seen[name] += 1
+
     def forward(self, preds, target):
         #loss = self.loss[0](preds[0], target) * self.loss_weight[0]
         all_loss = dict()
         all_loss['total_loss'] = 0
         for i in range(0, len(self.loss)):
             loss = self.loss[i](preds[i], target) * self.loss_weight[i]
-            if self.loss_name[i] in all_loss:
-                all_loss[self.loss_name[i]] += loss
-            else:
-                all_loss[self.loss_name[i]] = loss
+            all_loss[self.log_keys[i]] = loss
             all_loss['total_loss'] += loss
         return all_loss
 

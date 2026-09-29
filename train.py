@@ -100,11 +100,20 @@ class myTrain(LightningModule):
         f.write(str(result_table)+'\n')
         f.close()
 
+    def _log_gate_stats(self):
+        # GEE_Head (mode='gated'/'sum') exposes _gate_means: 1 = fully exploit (class-prior attention),
+        # 0 = fully explore (scene attention). A gate stuck near 0 or 1 at every stage means it is not
+        # actually routing anything -- worth watching for, since the loss curve alone would not show it.
+        for i, g in enumerate(getattr(self.net.seghead, '_gate_means', [])):
+            if g is not None:
+                self.log(f'gate_stage{i}', g, on_step=False, on_epoch=True, prog_bar=False)
+
     def training_step(self, batch, batch_idx):
         image, mask = batch[0], batch[1]
         preds = self(image)
         all_loss = self.loss(preds, mask)
-        
+        self._log_gate_stats()
+
         pred = preds[0].argmax(dim=1)
 
         self.tr_oa(pred, mask)
@@ -140,11 +149,21 @@ class myTrain(LightningModule):
         self.tr_f1.reset()
         self.tr_iou.reset()
 
+        # Runs after this epoch's validation (Lightning validates before firing on_train_epoch_end),
+        # so this is the peak GPU memory over train+val combined. Printed directly (visible in the
+        # Kaggle cell output even without TensorBoard) since an OOM crash gives no log at all otherwise.
+        if torch.cuda.is_available():
+            peak_gb = torch.cuda.max_memory_allocated() / 1e9
+            print(f"[epoch {self.current_epoch}] peak GPU memory: {peak_gb:.2f} GB")
+            self.log('gpu_mem_gb', peak_gb, on_step=False, on_epoch=True, prog_bar=False)
+            torch.cuda.reset_peak_memory_stats()
+
     def validation_step(self, batch, batch_idx):
         image, mask = batch[0], batch[1]
         preds = self(image)
         all_loss = self.loss(preds, mask)
-        
+        self._log_gate_stats()
+
         pred = preds[0].argmax(dim=1)
 
         self.val_oa(pred, mask)
