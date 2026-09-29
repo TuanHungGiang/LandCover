@@ -8,9 +8,13 @@ Run on the actual training GPU/resolution/batch size, e.g.:
 Uses CUDA events when available (accurate for async GPU kernels); falls back to wall-clock on CPU.
 """
 import argparse
+import os
+import sys
 import time
 
 import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root, for `utils`/`rsseg`
 
 from utils.config import Config
 from rsseg.models.backbones import repvit_m2_3, get_resnet34_OS32
