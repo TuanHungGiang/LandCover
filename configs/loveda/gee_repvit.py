@@ -17,6 +17,10 @@ _base_ = '../_base_/loveda_config.py'
 epoch = 50
 num_class = 7
 ignore_index = 7
+# Measured on T4 at this exact crop/batch (tools/profile_head.py --backward): backbone+head fp32 1049ms
+# vs fp16 521ms (~2x). Watch the first run's loss for NaN (custom ops: grid_sample, evidential-style
+# entropy) -- the entropy gate itself is forced to fp32 already (rsseg/models/segheads/gee_head.py).
+precision = '16-mixed'
 
 # Native LoveDA resolution (1024x1024). ignore_index=7 makes the padding added by RandomSizeAndCrop
 # (when the random scale shrinks the image below the crop size) count as ignored instead of class 0 (building).
