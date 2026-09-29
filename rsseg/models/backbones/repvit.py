@@ -254,6 +254,7 @@ class RepViT(nn.Module):
             for m in self.modules():
                 if isinstance(m, _BatchNorm):
                     m.eval()
+        return self  # nn.Module.train() must return self (e.g. for `.to(device).train()` chaining)
 
 
     def forward(self, x):
