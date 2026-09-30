@@ -29,7 +29,8 @@ EXPERIMENTS = [
     ('sparse10',     dict(mode='sparse', sparse_ratio=0.10)),
 ]
 
-ECHO = re.compile(r'GPU memory|Traceback|Error|error:|val_miou')
+ECHO = re.compile(r'GPU memory|Traceback|Error|error:|NCCL|Timeout|out of memory')
+NOISE = re.compile(r'frame #|c10::|terminate called|PossibleUserWarning|Config \(path')
 
 
 def run(name, over, args, out_dir):
@@ -48,7 +49,7 @@ def run(name, over, args, out_dir):
                                 text=True, errors='replace')
         for line in proc.stdout:
             log.write(line)
-            if ECHO.search(line):
+            if ECHO.search(line) and not NOISE.search(line):
                 print('   ', line.strip()[:200], flush=True)
         proc.wait()
     minutes = (time.time() - t0) / 60
@@ -58,7 +59,10 @@ def run(name, over, args, out_dir):
     if os.path.isfile(jl):
         rows = [json.loads(l) for l in open(jl) if l.strip()]
     if proc.returncode != 0 or not rows:
-        print(f'=== {name} FAILED (exit {proc.returncode}); see {exp_dir}/train.log', flush=True)
+        print(f'=== {name} FAILED (exit {proc.returncode}); last lines of {exp_dir}/train.log:', flush=True)
+        tail = [l.rstrip()[:220] for l in open(os.path.join(exp_dir, 'train.log'), errors='replace')
+                if l.strip() and not NOISE.search(l)][-40:]
+        print(chr(10).join('    ' + l for l in tail), flush=True)
         return None
     best = max(rows, key=lambda r: r['val_miou'])
     res = dict(name=name, best_miou=best['val_miou'], best_epoch=best['epoch'], last_miou=rows[-1]['val_miou'],
@@ -135,6 +139,10 @@ def main():
         res = run(name, over, args, out_dir)
         if res:
             done_minutes.append(res['minutes'])
+        elif not done_minutes:
+            print('=== the first experiment failed, not starting the others (fix it, then rerun the same command)',
+                  flush=True)
+            break
 
     summarize(out_dir, class_name)
 
