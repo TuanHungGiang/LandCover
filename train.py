@@ -337,10 +337,11 @@ if __name__ == "__main__":
     # sample's activations at a time -- the OOM at batch_size=2 never needed to happen this way)
     # cfg.gpus with more than one id -> DDP, one process per GPU. loader.batch_size is then PER GPU, so
     # the effective batch is batch_size * len(gpus) (8 x 2 = 16, the SCSM/LOGCAN++ setting).
-    # find_unused_parameters: the RepViT layers after the last out_index take no part in the loss.
+    # find_unused_parameters is off (it costs an extra autograd-graph traversal per step; DDP reported no
+    # unused parameters); set cfg.ddp_find_unused=True if a new head mode ever leaves parameters unused.
     multi_gpu = len(cfg.gpus) > 1
     trainer = Trainer(max_epochs = cfg.epoch,
-                      strategy = DDPStrategy(find_unused_parameters=True,
+                      strategy = DDPStrategy(find_unused_parameters=getattr(cfg, 'ddp_find_unused', False),
                                              # a hung collective aborts after this instead of the 30 min default
                                              timeout=timedelta(minutes=getattr(cfg, 'ddp_timeout_min', 10))) if multi_gpu else 'auto',
                       sync_batchnorm = multi_gpu and getattr(cfg, 'sync_bn', False),   # per-GPU batch 8 is enough for BN
