@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, TQDMProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
+from datetime import timedelta
 from pytorch_lightning.strategies import DDPStrategy
 import torchmetrics
 import prettytable
@@ -349,7 +350,9 @@ if __name__ == "__main__":
     # find_unused_parameters: the RepViT layers after the last out_index take no part in the loss.
     multi_gpu = len(cfg.gpus) > 1
     trainer = Trainer(max_epochs = cfg.epoch,
-                      strategy = DDPStrategy(find_unused_parameters=True) if multi_gpu else 'auto',
+                      strategy = DDPStrategy(find_unused_parameters=True,
+                                             # a hung collective aborts after this instead of the 30 min default
+                                             timeout=timedelta(minutes=getattr(cfg, 'ddp_timeout_min', 10))) if multi_gpu else 'auto',
                       sync_batchnorm = multi_gpu,
                       precision = getattr(cfg, 'precision', 32),
                       limit_train_batches = getattr(cfg, 'limit_train_batches', 1.0),

@@ -39,6 +39,8 @@ def run(name, over, args, out_dir):
     sets = [f'exp_name={exp_dir}', f'epoch={args.epochs}',
             f'optimizer_config.scheduler.max_epoch={args.epochs}',
             f'check_val_every_n_epoch={args.val_every}']
+    if args.single_gpu:   # batch 8 x accumulate 2 = 16, the same effective batch as 2 GPUs
+        sets += ['gpus=[0]', 'accumulate_grad_batches=2']
     sets += [f'model_config.seghead.{k}={v}' for k, v in over.items()]
     cmd = [sys.executable, 'train.py', '-c', args.config, '--set'] + sets
     print(f'\n=== {name}: {" ".join(sets)}', flush=True)
@@ -100,6 +102,7 @@ def main():
     ap.add_argument('--budget_hours', type=float, default=10.0, help='do not start a run that would end after this')
     ap.add_argument('--out', default='work_dirs/ablation')
     ap.add_argument('--only', nargs='+', default=None, help='subset of experiment names')
+    ap.add_argument('--single_gpu', action='store_true', help='use GPU 0 only (fallback if DDP does not work)')
     ap.add_argument('--no_profile', action='store_true', help='skip the per-mode head timing (tools/profile_head.py)')
     args = ap.parse_args()
     assert args.epochs % args.val_every == 0, '--epochs must be a multiple of --val_every'
