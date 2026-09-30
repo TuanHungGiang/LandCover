@@ -42,7 +42,10 @@ def build_dataloader(cfg, mode='train'): # get dataloader
         num_workers = loader_cfg.num_workers,
         pin_memory = loader_cfg.pin_memory,
         shuffle = loader_cfg.shuffle,
-        drop_last = loader_cfg.drop_last
+        drop_last = loader_cfg.drop_last,
+        # keep the workers alive between epochs and let them run ahead of the GPU
+        persistent_workers = loader_cfg.num_workers > 0,
+        prefetch_factor = 4 if loader_cfg.num_workers > 0 else None
     )
     
     return data_loader

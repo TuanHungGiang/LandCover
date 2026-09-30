@@ -33,7 +33,6 @@ import torch
 from PIL import Image, ImageFilter, ImageOps
 
 
-from skimage.filters import gaussian
 
 class RandomGaussianBlur(object):
     """
@@ -41,9 +40,8 @@ class RandomGaussianBlur(object):
     """
     def __call__(self, img, mask):
         sigma = 0.15 + random.random() * 1.15
-        blurred_img = gaussian(np.array(img), sigma=sigma, channel_axis=-1)
-        blurred_img *= 255
-        return Image.fromarray(blurred_img.astype(np.uint8)),mask
+        # PIL's uint8 blur is ~10x cheaper than skimage.gaussian on float64 and was a data-loader bottleneck
+        return img.filter(ImageFilter.GaussianBlur(radius=sigma)), mask
 
 
 
@@ -494,6 +492,18 @@ class RandomSizeAndCrop(object):
 
         if centroid is not None:
             centroid = [int(c * scale_amt) for c in centroid]
+
+        th, tw = self.crop.size
+        if centroid is None and w >= tw and h >= th:
+            # Fast path: same random scale and same uniform crop position as "resize everything, then
+            # crop", but only the crop window is resampled (PIL `box` = source region), so the up-to-2x
+            # upscaled 2048x2048 intermediate is never built. No padding is needed when w >= tw, h >= th.
+            x1 = 0 if w == tw else random.randint(0, w - tw)
+            y1 = 0 if h == th else random.randint(0, h - th)
+            sx, sy = w / img.size[0], h / img.size[1]
+            box = (x1 / sx, y1 / sy, (x1 + tw) / sx, (y1 + th) / sy)
+            return (img.resize((tw, th), Image.BICUBIC, box=box),
+                    mask.resize((tw, th), Image.NEAREST, box=box))
 
         img, mask = img.resize((w, h), Image.BICUBIC), mask.resize((w, h), Image.NEAREST)
 

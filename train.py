@@ -13,7 +13,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, TQ
 from pytorch_lightning.loggers import TensorBoardLogger
 from datetime import timedelta
 from pytorch_lightning.strategies import DDPStrategy
-import torchmetrics
+import torch.distributed as dist
 import prettytable
 import numpy as np
 
@@ -69,21 +69,37 @@ class myTrain(LightningModule):
         self.eval_label_id_left = cfg.eval_label_id_left
         self.eval_label_id_right = cfg.eval_label_id_right
         
-        metric_cfg1 = cfg.metric_cfg1
-        metric_cfg2 = cfg.metric_cfg2
+        # Metrics come from a K x K confusion matrix kept per rank and summed over ranks with ONE explicit
+        # all_reduce at each epoch end. (torchmetrics' sync issued several collectives per metric; the two
+        # ranks got out of step at the first epoch end and NCCL hung until its watchdog killed the run.)
+        self._K = cfg.metric_cfg2['num_classes']
+        self._ignore = cfg.metric_cfg2['ignore_index']
+        self._cm = {'tr': None, 'val': None}
 
-        
-        self.tr_oa=torchmetrics.Accuracy(**metric_cfg1)
-        self.tr_prec = torchmetrics.Precision(**metric_cfg2)
-        self.tr_recall = torchmetrics.Recall(**metric_cfg2)
-        self.tr_f1 = torchmetrics.F1Score(**metric_cfg2)
-        self.tr_iou=torchmetrics.JaccardIndex(**metric_cfg2)
+    def _cm_update(self, key, pred, mask):
+        K = self._K
+        if self._cm[key] is None or self._cm[key].device != pred.device:
+            self._cm[key] = torch.zeros(K, K, dtype=torch.long, device=pred.device)
+        valid = (mask != self._ignore) & (mask >= 0) & (mask < K)
+        idx = mask[valid] * K + pred[valid]
+        self._cm[key] += torch.bincount(idx, minlength=K * K).view(K, K)
 
-        self.val_oa=torchmetrics.Accuracy(**metric_cfg1)
-        self.val_prec = torchmetrics.Precision(**metric_cfg2)
-        self.val_recall = torchmetrics.Recall(**metric_cfg2)
-        self.val_f1 = torchmetrics.F1Score(**metric_cfg2)
-        self.val_iou=torchmetrics.JaccardIndex(**metric_cfg2)
+    def _cm_metrics(self, key):
+        """-> ([precision, recall, f1, iou] per class (length K), overall accuracy). Resets the matrix."""
+        cm = self._cm[key]
+        cm = torch.zeros(self._K, self._K, dtype=torch.long, device=self.device) if cm is None else cm.clone()
+        self._cm[key] = None
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(cm)                      # every rank calls this exactly once per epoch end
+        cm = cm.double()
+        tp = cm.diag()
+        fp, fn = cm.sum(0) - tp, cm.sum(1) - tp
+
+        def ratio(num, den):
+            return torch.where(den > 0, num / den.clamp_min(1), torch.zeros_like(num))
+
+        metrics = [ratio(tp, tp + fp), ratio(tp, tp + fn), ratio(2 * tp, 2 * tp + fp + fn), ratio(tp, tp + fp + fn)]
+        return metrics, float(tp.sum() / cm.sum().clamp_min(1))
 
     def forward(self, x, test = False) :
         pred = self.net(x)
@@ -163,24 +179,17 @@ class myTrain(LightningModule):
 
         pred = preds[0].argmax(dim=1)
 
-        self.tr_oa(pred, mask)
-        self.tr_prec(pred, mask)
-        self.tr_recall(pred, mask)
-        self.tr_f1(pred, mask)
-        self.tr_iou(pred, mask)
+        self._cm_update('tr', pred, mask)
 
         for loss_name in all_loss:
             self.log(f'train_{loss_name}', all_loss[loss_name], on_step=False, on_epoch=True, prog_bar=True,
-                     sync_dist=True, batch_size=image.shape[0])
+                     batch_size=image.shape[0])
         return all_loss['total_loss']
 
     def on_train_epoch_end(self):
-        metrics = [self.tr_prec.compute(),
-                   self.tr_recall.compute(),
-                   self.tr_f1.compute(),
-                   self.tr_iou.compute()]
-        
-        log = {'tr_oa': float(self.tr_oa.compute().cpu()),
+        metrics, tr_oa = self._cm_metrics('tr')
+
+        log = {'tr_oa': tr_oa,
                'tr_prec': np.mean([item.cpu() for item in metrics[0][self.eval_label_id_left: self.eval_label_id_right]]),
                'tr_recall': np.mean([item.cpu() for item in metrics[1][self.eval_label_id_left: self.eval_label_id_right]]),
                'tr_f1': np.mean([item.cpu() for item in metrics[2][self.eval_label_id_left: self.eval_label_id_right]]),
@@ -190,12 +199,6 @@ class myTrain(LightningModule):
         
         for key, value in zip(log.keys(), log.values()):
             self.log(key, value, on_step=False,on_epoch=True,prog_bar=False)
-
-        self.tr_oa.reset()
-        self.tr_prec.reset()
-        self.tr_recall.reset()
-        self.tr_f1.reset()
-        self.tr_iou.reset()
 
         # Runs after this epoch's validation (Lightning validates before firing on_train_epoch_end),
         # so this covers train+val combined. Printed directly (visible in the Kaggle cell output even
@@ -264,24 +267,17 @@ class myTrain(LightningModule):
 
         pred = logits.argmax(dim=1)
 
-        self.val_oa(pred, mask)
-        self.val_prec(pred, mask)
-        self.val_recall(pred, mask)
-        self.val_f1(pred, mask)
-        self.val_iou(pred, mask)
+        self._cm_update('val', pred, mask)
 
         for loss_name in all_loss:
             self.log(f'val_{loss_name}', all_loss[loss_name], on_step=False, on_epoch=True, prog_bar=True,
-                     sync_dist=True, batch_size=image.shape[0])
+                     batch_size=image.shape[0])
         return all_loss['total_loss']
 
     def on_validation_epoch_end(self):
-        metrics = [self.val_prec.compute(),
-                   self.val_recall.compute(),
-                   self.val_f1.compute(),
-                   self.val_iou.compute()]
+        metrics, val_oa = self._cm_metrics('val')
 
-        log = {'val_oa': float(self.val_oa.compute().cpu()),
+        log = {'val_oa': val_oa,
                'val_prec': np.mean([item.cpu() for item in metrics[0][self.eval_label_id_left: self.eval_label_id_right]]),
                'val_recall': np.mean([item.cpu() for item in metrics[1][self.eval_label_id_left: self.eval_label_id_right]]),
                'val_f1': np.mean([item.cpu() for item in metrics[2][self.eval_label_id_left: self.eval_label_id_right]]),
@@ -301,12 +297,6 @@ class myTrain(LightningModule):
 
         for key, value in zip(log.keys(), log.values()):
             self.log(key, value, on_step=False, on_epoch=True, prog_bar=False)
-
-        self.val_oa.reset()
-        self.val_prec.reset()
-        self.val_recall.reset()
-        self.val_f1.reset()
-        self.val_iou.reset()
 
 if __name__ == "__main__":
     args = get_args()
@@ -353,7 +343,8 @@ if __name__ == "__main__":
                       strategy = DDPStrategy(find_unused_parameters=True,
                                              # a hung collective aborts after this instead of the 30 min default
                                              timeout=timedelta(minutes=getattr(cfg, 'ddp_timeout_min', 10))) if multi_gpu else 'auto',
-                      sync_batchnorm = multi_gpu,
+                      sync_batchnorm = multi_gpu and getattr(cfg, 'sync_bn', False),   # per-GPU batch 8 is enough for BN
+                      check_val_every_n_epoch = getattr(cfg, 'check_val_every_n_epoch', 1),
                       precision = getattr(cfg, 'precision', 32),
                       limit_train_batches = getattr(cfg, 'limit_train_batches', 1.0),
                       limit_val_batches = getattr(cfg, 'limit_val_batches', 1.0),
