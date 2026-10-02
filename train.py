@@ -304,6 +304,7 @@ if __name__ == "__main__":
     if args.set:
         cfg.merge_from_dict(parse_cfg_overrides(args.set))
     print(cfg)
+    seed_everything(getattr(cfg, 'seed', 2025), workers=True)   # cfg.seed: repeat a run with another seed
     model = myTrain(cfg)
 
     

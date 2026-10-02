@@ -101,7 +101,7 @@ def main():
         print(f"{'backbone':<16} params={params:6.2f}M  time/iter={t*1000:8.2f} ms")
 
     bench_backbone()
-    for mode in ('exploit_only', 'explore_only', 'sum', 'gated', 'sparse'):
+    for mode in ('exploit_only', 'explore_only', 'sum', 'gated', 'sparse', 'mamba', 'mamba_only'):
         bench(mode, GEE_Head(**{**hcfg, 'mode': mode}))
 
 

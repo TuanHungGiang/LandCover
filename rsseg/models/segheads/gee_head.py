@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from timm.models.layers import trunc_normal_
 
 from rsseg.models.segheads.logcanplus_head import RVSA_MRAM, SpatialGatherModule, conv_3x3, upsample_add
+from rsseg.models.basemodules.ssm_lite import SparseScanBlock
 
 
 class SceneExplore(nn.Module):
@@ -63,6 +64,10 @@ class GEE_Head(nn.Module):
         'sparse'       exploit everywhere; the scene-token attention is only run for the `sparse_ratio`
                        fraction of pixels with the highest classifier entropy (residual add), so the
                        explore cost scales with the number of uncertain pixels, not with H*W
+        'mamba'        exploit + a light state-space scan (basemodules/ssm_lite.py) over the uncertain pixels,
+                       configured by `scan_cfg` (order raster|conf|hybrid, dirs, ratio, expand, d_state,
+                       n_heads, dt_min, dt_max, chunk, stages); residual add, bypass elsewhere
+        'mamba_only'   the same scan without the class-center attention (feature + scan residual)
     """
 
     def __init__(self,
@@ -73,9 +78,10 @@ class GEE_Head(nn.Module):
                  patch_size,
                  explore_grid=8,
                  mode='gated',
-                 sparse_ratio=0.25):
+                 sparse_ratio=0.25,
+                 scan_cfg=None):
         super().__init__()
-        assert mode in ('gated', 'sum', 'exploit_only', 'explore_only', 'sparse')
+        assert mode in ('gated', 'sum', 'exploit_only', 'explore_only', 'sparse', 'mamba', 'mamba_only')
         self.mode = mode
         self.sparse_ratio = sparse_ratio
         C = transform_channel
@@ -85,11 +91,17 @@ class GEE_Head(nn.Module):
         self.aux = nn.ModuleList([nn.Conv2d(C, num_class, kernel_size=1) for _ in in_channel])
         self.global_gather = SpatialGatherModule()
 
-        if mode != 'explore_only':
+        if mode not in ('explore_only', 'mamba_only'):
             self.exploit = nn.ModuleList([
                 RVSA_MRAM(dim=C, out_dim=C, num_heads=num_heads, patch_size=patch_size, num_classes=num_class)
                 for _ in in_channel])
-        if mode != 'exploit_only':
+        if mode in ('mamba', 'mamba_only'):
+            cfg = dict(order='conf', dirs=2, ratio=0.25, expand=1, d_state=8, n_heads=4,
+                       dt_min=1e-3, dt_max=1e-1, chunk=64, stages=(1, 2, 3))   # stride 8/16/32; stride 4 stays conv-only
+            cfg.update(dict(scan_cfg or {}))
+            stages = [int(i) for i in cfg.pop('stages')]
+            self.scan = nn.ModuleDict({str(i): SparseScanBlock(C, **cfg) for i in stages})
+        if mode in ('gated', 'sum', 'explore_only', 'sparse'):
             self.explore = nn.ModuleList([SceneExplore(C, num_heads, explore_grid) for _ in in_channel])
             if mode != 'sparse':
                 self.explore_fuse = nn.ModuleList([conv_3x3(C * 2, C) for _ in in_channel])
@@ -114,6 +126,13 @@ class GEE_Head(nn.Module):
     def _stage(self, i, feat, logits, global_center):
         if self.mode == 'exploit_only':
             return self.exploit[i](feat, global_center)
+        if self.mode in ('mamba', 'mamba_only'):
+            out = self.exploit[i](feat, global_center) if self.mode == 'mamba' else feat
+            if str(i) in self.scan:
+                block = self.scan[str(i)]
+                out = out + block(feat, logits)
+                self._gate_means[i] = block.last_conf          # mean classifier confidence, for the log
+            return out
         if self.mode == 'sparse':
             return self._sparse_stage(i, feat, logits, global_center)
 
