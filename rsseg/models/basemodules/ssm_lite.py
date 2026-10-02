@@ -16,10 +16,12 @@ SparseScanBlock  what is scanned and in which order, for land-cover maps:
                      and position, which a sorted 1-D sequence would otherwise lose.
 """
 import math
+from functools import partial
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 def _segsum(a):
@@ -74,11 +76,19 @@ def ssd_scan(x, dt, A, Bm, Cm, D, chunk=64):
 class SSDLite(nn.Module):
     """Mamba-2-style block on (B, L, C) tokens: in_proj -> selective scan -> gated norm -> out_proj."""
 
-    def __init__(self, dim, expand=1, d_state=8, n_heads=4, dt_min=1e-3, dt_max=1e-1, chunk=64):
+    def __init__(self, dim, expand=1, d_state=8, n_heads=4, dt_min=1e-3, dt_max=1e-1, chunk=64,
+                 backend='torch', use_checkpoint=False):
+        """backend: 'torch'    chunked scan above (no extra install),
+                    'compile'  the same function through torch.compile (fuses the small ops, needs Triton),
+                    'triton'   the mamba-ssm Triton SSD kernel (pip install mamba-ssm; checked against 'torch'
+                               by tools/profile_scan.py before you rely on it).
+        use_checkpoint: recompute the scan in the backward pass (less VRAM, ~+30% time of the scan)."""
         super().__init__()
+        assert backend in ('torch', 'compile', 'triton'), backend
         E = int(expand * dim)
         assert E % n_heads == 0, (E, n_heads)
         self.E, self.H, self.P, self.N, self.chunk = E, n_heads, E // n_heads, d_state, chunk
+        self.backend, self.use_checkpoint, self._scan_fn = backend, use_checkpoint, None
         self.in_proj = nn.Linear(dim, 2 * E, bias=False)               # scan input x and gate z
         self.bcdt_proj = nn.Linear(E, 2 * d_state + n_heads, bias=False)   # B_t, C_t and one dt per head
         # multi-timescale: heads start with log-spaced step sizes (fast heads = local, slow heads = long memory)
@@ -89,14 +99,25 @@ class SSDLite(nn.Module):
         self.norm = nn.LayerNorm(E)
         self.out_proj = nn.Linear(E, dim, bias=False)
 
+    def _scan(self, x, dt, A, Bm, Cm, D):
+        if self.backend == 'triton':
+            from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+            return mamba_chunk_scan_combined(x, dt, A, Bm.unsqueeze(2), Cm.unsqueeze(2), chunk_size=self.chunk, D=D)
+        if self._scan_fn is None:
+            fn = partial(ssd_scan, chunk=self.chunk)
+            self._scan_fn = torch.compile(fn, dynamic=False) if self.backend == 'compile' else fn
+        if self.use_checkpoint and self.training and torch.is_grad_enabled():
+            return checkpoint(self._scan_fn, x, dt, A, Bm, Cm, D, use_reentrant=False)
+        return self._scan_fn(x, dt, A, Bm, Cm, D)
+
     def forward(self, tokens):
         Bsz, L, _ = tokens.shape
         x, z = self.in_proj(tokens).chunk(2, dim=-1)
         x = F.silu(x)
         Bm, Cm, dt = torch.split(self.bcdt_proj(x), [self.N, self.N, self.H], dim=-1)
         dt = F.softplus(dt + self.dt_bias)
-        y = ssd_scan(x.view(Bsz, L, self.H, self.P).float(), dt.float(), -torch.exp(self.A_log.float()),
-                     Bm.float(), Cm.float(), self.D.float(), self.chunk)
+        y = self._scan(x.view(Bsz, L, self.H, self.P).float(), dt.float(), -torch.exp(self.A_log.float()),
+                       Bm.float(), Cm.float(), self.D.float())
         y = y.reshape(Bsz, L, self.E).to(tokens.dtype)
         return self.out_proj(self.norm(y) * F.silu(z))
 
@@ -105,14 +126,14 @@ class SparseScanBlock(nn.Module):
     ORDERS = ('raster', 'conf', 'hybrid')
 
     def __init__(self, dim, order='conf', dirs=2, ratio=0.25, expand=1, d_state=8, n_heads=4,
-                 dt_min=1e-3, dt_max=1e-1, chunk=64):
+                 dt_min=1e-3, dt_max=1e-1, chunk=64, backend='torch', use_checkpoint=False):
         super().__init__()
         assert order in self.ORDERS and dirs in (2, 4), (order, dirs)
         self.order, self.dirs, self.ratio = order, dirs, ratio
         self.local = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
         self.norm = nn.LayerNorm(dim)
         self.pos = nn.Linear(4, dim)
-        self.ssm = SSDLite(dim, expand, d_state, n_heads, dt_min, dt_max, chunk)
+        self.ssm = SSDLite(dim, expand, d_state, n_heads, dt_min, dt_max, chunk, backend, use_checkpoint)
         self.last_conf = None
 
     @staticmethod
