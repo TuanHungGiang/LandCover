@@ -3,7 +3,8 @@
     python tools/run_ablation.py                       # all experiments, default budget
     python tools/run_ablation.py --epochs 10 --budget_hours 9
     python tools/run_ablation.py --only exploit_only gated sparse25
-    python tools/run_ablation.py --group order --seeds 0 1 2     # 4 methods x 3 seeds, mean +- std in the table
+    python tools/run_ablation.py --group ee --seeds 0 1          # 6 methods x 2 seeds, mean +- std in the table
+    python tools/analyze_ablation.py                              # ranking, significance, per-class winners, Pareto
 
 Each experiment is a normal `train.py` run (DDP when the config lists two GPUs) in work_dirs/ablation/<name>/.
 It is restartable: an experiment with a result.json is skipped, so after a session timeout you rerun the same
@@ -40,7 +41,10 @@ GROUPS = {
     'base': ['exploit_only', 'gated', 'sparse25', 'explore_only', 'sum', 'sparse10'],
     'mamba': ['mamba_raster_dense', 'mamba_raster25', 'mamba_conf25', 'mamba_hybrid25', 'mamba_conf_dense', 'mamba_conf25_only'],
     'order': ['exploit_only', 'mamba_raster25', 'mamba_conf25', 'mamba_hybrid25'],      # does the scan order matter?
-    'light': ['exploit_only', 'mamba_conf25', 'mamba_conf25_only'],                      # is the class-center attention needed?
+    'light': ['exploit_only', 'mamba_conf25', 'mamba_conf25_only'],
+    # the explore / exploit story: exploit alone, exploit + attention explore, exploit + Mamba explore in three scan
+    # orders, and Mamba explore without the class-center attention
+    'ee': ['exploit_only', 'sparse25', 'mamba_raster25', 'mamba_conf25', 'mamba_hybrid25', 'mamba_conf25_only'],                      # is the class-center attention needed?
 }
 
 ECHO = re.compile(r'GPU memory|Traceback|Error|error:|NCCL|Timeout|out of memory')
