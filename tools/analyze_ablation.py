@@ -36,6 +36,8 @@ ANATOMY = {
     'm11_exploit_only': ('yes', '-', '-', '- (M1.1 backbone)'),
     'm15_mamba_conf_only': ('-', '-', 'top-25% uncertain', 'class/confidence (M1.5 backbone)'),
     'm15_explore_only': ('-', 'dense', '-', '- (M1.5 backbone)'),
+    'm11_conf_bg07': ('-', '-', 'top-25% uncertain', 'class/confidence, background weight 0.7'),
+    'm11_conf_bg05': ('-', '-', 'top-25% uncertain', 'class/confidence, background weight 0.5'),
 }
 
 

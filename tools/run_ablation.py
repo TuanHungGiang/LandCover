@@ -21,7 +21,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# keys starting with 'backbone.' go to model_config.backbone, all others to model_config.seghead
+# keys starting with 'backbone.' go to model_config.backbone, 'loss.' to loss_config, all others to model_config.seghead
 FAST = {'backbone.type': 'repvit_m1_1', 'backbone.out_indices': [3, 7, 21, 24],
         'backbone.init_cfg.checkpoint': 'pretrain/repvit_m1_1_distill_450e.pth', 'in_channel': [64, 128, 256, 512]}
 
@@ -49,6 +49,9 @@ EXPERIMENTS = [
     ('m11_mamba_raster_only', dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'raster', 'scan_cfg.dirs': 2, 'scan_cfg.ratio': 0.25})),
     ('m11_explore_only',      dict(mode='explore_only', **FAST)),
     ('m11_exploit_only',      dict(mode='exploit_only', **FAST)),                       # accuracy reference, class-center attention
+    # catch-all class down-weighted in the loss (the confusion table shows every class leaking into background)
+    ('m11_conf_bg07', dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25, 'loss.class_weight': [0.7, 1, 1, 1, 1, 1, 1]})),
+    ('m11_conf_bg05', dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25, 'loss.class_weight': [0.5, 1, 1, 1, 1, 1, 1]})),
     ('m15_mamba_conf_only',   dict(mode='mamba_only', **MID, **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25})),
     ('m15_explore_only',      dict(mode='explore_only', **MID)),
 ]
@@ -59,6 +62,7 @@ GROUPS = {
     'light': ['exploit_only', 'mamba_conf25', 'mamba_conf25_only'],
     # the explore / exploit story: exploit alone, exploit + attention explore, exploit + Mamba explore in three scan
     # orders, and Mamba explore without the class-center attention
+    'bg': ['m11_mamba_conf_only', 'm11_conf_bg07', 'm11_conf_bg05'],
     'mid': ['m15_mamba_conf_only', 'm15_explore_only'],
     'fast': ['m11_mamba_conf_only', 'm11_mamba_raster_only', 'm11_explore_only', 'm11_exploit_only'],
     'ee': ['exploit_only', 'sparse25', 'mamba_raster25', 'mamba_conf25', 'mamba_hybrid25', 'mamba_conf25_only'],                      # is the class-center attention needed?
@@ -83,7 +87,8 @@ def run(name, over, args, out_dir, seed=None):
         sets += ['gpus=[0]', 'accumulate_grad_batches=2']
     if seed is not None:
         sets.append(f'seed={seed}')
-    sets += [f'model_config.{k}={v}' if k.startswith('backbone.') else f'model_config.seghead.{k}={v}' for k, v in over.items()]
+    sets += [f'model_config.{k}={v}' if k.startswith('backbone.') else
+             f'loss_config.{k[5:]}={v}' if k.startswith('loss.') else f'model_config.seghead.{k}={v}' for k, v in over.items()]
     cmd = [sys.executable, 'train.py', '-c', args.config, '--set'] + sets
     print(f'\n=== {label}: {" ".join(sets)}', flush=True)
 
