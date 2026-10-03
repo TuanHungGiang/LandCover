@@ -91,6 +91,7 @@ class myTrain(LightningModule):
         self._cm[key] = None
         if dist.is_available() and dist.is_initialized():
             dist.all_reduce(cm)                      # every rank calls this exactly once per epoch end
+        self._last_cm = cm.clone()                   # (K, K) counts, rows = truth, cols = prediction
         cm = cm.double()
         tp = cm.diag()
         fp, fn = cm.sum(0) - tp, cm.sum(1) - tp
@@ -293,7 +294,8 @@ class myTrain(LightningModule):
                 f.write(json.dumps(dict(
                     epoch=self.current_epoch, time=time.time(), params_M=self.params_M,
                     val_miou=float(log['val_miou']), val_oa=float(log['val_oa']),
-                    iou=[float(v) for v in metrics[3][:n_cls].cpu()])) + "\n")
+                    iou=[float(v) for v in metrics[3][:n_cls].cpu()],
+                    cm=self._last_cm[:n_cls, :n_cls].tolist())) + "\n")
 
         for key, value in zip(log.keys(), log.values()):
             self.log(key, value, on_step=False, on_epoch=True, prog_bar=False)

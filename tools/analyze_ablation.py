@@ -33,7 +33,7 @@ ANATOMY = {
 }
 
 
-def load(out_dir):
+def load(out_dir, metric='last'):
     runs = {}
     for d in sorted(os.listdir(out_dir)):
         rp = os.path.join(out_dir, d, 'result.json')
@@ -45,6 +45,11 @@ def load(out_dir):
         best = max(rows, key=lambda x: x['val_miou']) if rows else None
         r['oa'] = r.get('oa', best['val_oa'] if best else float('nan'))
         r['curve'] = [(x['epoch'], x['val_miou']) for x in rows]
+        r['peak_miou'] = r['best_miou']            # mIoU at the epoch picked on the same val set (optimistic)
+        r['cm'] = rows[-1].get('cm') if rows else None
+        if metric == 'last' and rows:              # no epoch selection: what the finished model scores
+            last = rows[-1]
+            r['best_miou'], r['iou'], r['oa'] = last['val_miou'], last['iou'], last['val_oa']
         runs.setdefault(r['name'], []).append(r)
     return runs
 
@@ -96,11 +101,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='work_dirs/ablation')
     ap.add_argument('--baseline', default='exploit_only')
+    ap.add_argument('--metric', choices=['last', 'best'], default='last',
+                    help='last = mIoU/OA/IoU of the final epoch (default, no selection bias); best = at the best val epoch')
     ap.add_argument('--classes', nargs='+', default=['background', 'building', 'road', 'water', 'barren', 'forest', 'agricultural'])
     args = ap.parse_args()
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     out = args.out if os.path.isabs(args.out) else os.path.join(root, args.out)
-    runs = load(out)
+    runs = load(out, args.metric)
     if not runs:
         raise SystemExit(f'no finished runs (result.json) in {out}')
     base = args.baseline if args.baseline in runs else None
@@ -115,11 +122,12 @@ def main():
                         params=rs[0]['params_M'], iou=[sum(r['iou'][i] for r in rs) / len(rs) * 100 for i in range(len(args.classes))])
 
     P('# Ablation analysis\n')
-    P(f'{sum(v["n"] for v in stats.values())} finished runs, {len(stats)} methods; baseline = {base or "none found"}.\n')
+    P(f'{sum(v["n"] for v in stats.values())} finished runs, {len(stats)} methods; baseline = {base or "none found"}; '
+      f'metric = {"final epoch (no epoch selection)" if args.metric == "last" else "best validation epoch (optimistic)"}.\n')
 
     P('## 1. Ranking by mIoU (best)\n')
-    P('| rank | method | seeds | mIoU mean | std | vs baseline (paired, points) | verdict | min/run | params (M) |')
-    P('|---|---|---|---|---|---|---|---|---|')
+    P('| rank | method | seeds | mIoU mean | std | vs baseline (paired, points) | verdict | min/run | params (M) | peak-epoch mIoU |')
+    P('|---|---|---|---|---|---|---|---|---|---|')
     for i, (n, v) in enumerate(sorted(stats.items(), key=lambda kv: -kv[1]['miou']), 1):
         if base and n != base:
             m, sd, t, k = paired(runs, n, base)
@@ -128,7 +136,8 @@ def main():
         else:
             diff, vd = '-', '(baseline)' if n == base else '-'
         std = f'{v["std"]:.2f}' if not math.isnan(v['std']) else '-'
-        P(f'| {i} | {n} | {v["n"]} | {v["miou"]:.2f} | {std} | {diff} | {vd} | {v["minutes"]:.0f} | {v["params"]:.2f} |')
+        peak = sum(r['peak_miou'] for r in runs[n]) / len(runs[n]) * 100
+        P(f'| {i} | {n} | {v["n"]} | {v["miou"]:.2f} | {std} | {diff} | {vd} | {v["minutes"]:.0f} | {v["params"]:.2f} | {peak:.2f} |')
 
     P('\n## 2. Ranking by accuracy (OA at the best epoch)\n')
     P('| rank | method | OA mean | mIoU mean |')
@@ -169,6 +178,34 @@ def main():
     P('|---|---|---|---|---|')
     for n, v in sorted(stats.items(), key=lambda kv: -kv[1]['miou']):
         P(f'| {n} | {v["miou"]:.2f} | {v["minutes"]:.0f} | {v["params"]:.2f} | {"yes" if n in front else ""} |')
+
+    P('\n## 6. Noise floor\n')
+    P('Seed-to-seed spread inside each method (max - min of the final mIoU) against the spread between methods:\n')
+    P('| method | seeds | min | max | spread |')
+    P('|---|---|---|---|---|')
+    spreads = []
+    for n, rs in runs.items():
+        vals = [r['best_miou'] * 100 for r in rs]
+        spreads.append(max(vals) - min(vals))
+        P(f'| {n} | {len(vals)} | {min(vals):.2f} | {max(vals):.2f} | {max(vals) - min(vals):.2f} |')
+    between = max(v['miou'] for v in stats.values()) - min(v['miou'] for v in stats.values())
+    P(f'\nBetween-method spread of the means: **{between:.2f}**; typical within-method seed spread: **{sum(spreads) / len(spreads):.2f}**. '
+      + ('Differences between methods are of the same size as seed noise: do not read them as improvements.'
+         if between <= 2.0 * (sum(spreads) / len(spreads)) else 'Between-method differences exceed seed noise.'))
+
+    with_cm = {n: [r['cm'] for r in rs if r.get('cm')] for n, rs in runs.items()}
+    with_cm = {n: v for n, v in with_cm.items() if v}
+    if with_cm:
+        P('\n## 7. What each class is confused with (final epoch, share of the true pixels, mean over seeds)\n')
+        P('| method | class | recall | most confused with | share | second | share |')
+        P('|---|---|---|---|---|---|---|')
+        for n, cms in with_cm.items():
+            K = len(args.classes)
+            tot = [[sum(cm[i][j] for cm in cms) for j in range(K)] for i in range(K)]
+            for i, cname in enumerate(args.classes):
+                row_sum = sum(tot[i]) or 1
+                wrong = sorted(((tot[i][j] / row_sum, args.classes[j]) for j in range(K) if j != i), reverse=True)[:2]
+                P(f'| {n} | {cname} | {tot[i][i] / row_sum * 100:.1f}% | {wrong[0][1]} | {wrong[0][0] * 100:.1f}% | {wrong[1][1]} | {wrong[1][0] * 100:.1f}% |')
 
     n_seeds = min(v['n'] for v in stats.values())
     P(f'\n## Reading guide\n\n- Fewest seeds in any method: {n_seeds}. ' +
