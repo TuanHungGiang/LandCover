@@ -67,7 +67,9 @@ def main():
     ap.add_argument('--batches', nargs='+', type=int, default=[1, 8])
     ap.add_argument('--iters', type=int, default=30)
     ap.add_argument('--channels_last', action='store_true')
-    ap.add_argument('--compile', action='store_true', help='also time torch.compile (needs Triton)')
+    ap.add_argument('--compile', action='store_true', help='also time torch.compile + amp (needs Triton)')
+    ap.add_argument('--compile_mode', default='default', choices=['default', 'reduce-overhead', 'max-autotune-no-cudagraphs'],
+                    help='reduce-overhead = CUDA graphs: removes launch overhead, the limit of this head at small sizes')
     args = ap.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -118,14 +120,19 @@ def main():
                     net.float()
                     torch.cuda.empty_cache() if device == 'cuda' else None
     if args.compile and device == 'cuda':
+        mode = None if args.compile_mode == 'default' else args.compile_mode
+        print(f'\ntorch.compile (mode={args.compile_mode}) + amp, every size/batch above (first call of each shape compiles, ~1 min):')
+        print(f'{"size":>5}{"batch":>6}{"latency ms":>12}{"FPS":>9}{"img/s":>9}{"peak MB":>9}')
         try:
-            comp = torch.compile(net, dynamic=False)
-            x = torch.randn(args.batches[0], 3, args.sizes[0], args.sizes[0], device=device)
-            with torch.no_grad(), torch.autocast('cuda', dtype=torch.float16):
-                ms, _ = timed(lambda: comp(x)[0], args.iters, device)
-            print(f'\ntorch.compile + amp, size {args.sizes[0]}, batch {args.batches[0]}: {ms:.1f} ms')
+            comp = torch.compile(net, dynamic=False, mode=mode)
+            for size in args.sizes:
+                for batch in args.batches:
+                    x = torch.randn(batch, 3, size, size, device=device)
+                    with torch.no_grad(), torch.autocast('cuda', dtype=torch.float16):
+                        ms, mem = timed(lambda: comp(x)[0], args.iters, device)
+                    print(f'{size:>5}{batch:>6}{ms:>12.1f}{1000 / ms:>9.1f}{batch * 1000 / ms:>9.1f}{mem:>9.0f}')
         except Exception as e:
-            print(f'\ntorch.compile failed: {type(e).__name__}: {str(e)[:100]}')
+            print(f'torch.compile failed: {type(e).__name__}: {str(e)[:100]}')
 
 
 if __name__ == '__main__':
