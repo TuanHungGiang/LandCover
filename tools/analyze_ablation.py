@@ -30,6 +30,10 @@ ANATOMY = {
     'mamba_hybrid25': ('yes', '-', 'top-25% uncertain', 'class + raster'),
     'mamba_conf_dense': ('yes', '-', 'all pixels', 'class/confidence'),
     'mamba_conf25_only': ('-', '-', 'top-25% uncertain', 'class/confidence'),
+    'm11_mamba_conf_only': ('-', '-', 'top-25% uncertain', 'class/confidence (M1.1 backbone)'),
+    'm11_mamba_raster_only': ('-', '-', 'top-25% uncertain', 'raster (M1.1 backbone)'),
+    'm11_explore_only': ('-', 'dense', '-', '- (M1.1 backbone)'),
+    'm11_exploit_only': ('yes', '-', '-', '- (M1.1 backbone)'),
 }
 
 

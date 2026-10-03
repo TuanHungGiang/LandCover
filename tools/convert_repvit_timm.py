@@ -1,8 +1,9 @@
-"""Convert the timm RepViT-M2.3 ImageNet weights (Hugging Face: timm/repvit_m2_3.dist_450e_in1k)
+"""Convert timm RepViT ImageNet weights (Hugging Face: timm/<model>.dist_450e_in1k, default repvit_m2_3)
 into the key layout used by rsseg/models/backbones/repvit.py, so they can be used as
-`pretrain/repvit_m2_3_distill_450e.pth` (no Baidu account needed).
+`pretrain/<model>_distill_450e.pth` (no Baidu account needed).
 
     python tools/convert_repvit_timm.py --dst pretrain/repvit_m2_3_distill_450e.pth
+    python tools/convert_repvit_timm.py --model repvit_m1_1 --dst pretrain/repvit_m1_1_distill_450e.pth
 
 Needs `safetensors` (pip install safetensors). The source file is downloaded from Hugging Face
 if --src is not given.
@@ -14,7 +15,7 @@ import urllib.request
 
 import torch
 
-HF_URL = "https://huggingface.co/timm/repvit_m2_3.dist_450e_in1k/resolve/main/model.safetensors"
+HF_URL = "https://huggingface.co/timm/{model}.dist_450e_in1k/resolve/main/model.safetensors"
 
 BLOCK_RENAMES = [
     (r"^token_mixer\.conv\.", "token_mixer.0.conv."),
@@ -83,18 +84,21 @@ def convert(timm_sd):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--src", default=None, help="timm model.safetensors (downloaded if omitted)")
-    parser.add_argument("--dst", default="pretrain/repvit_m2_3_distill_450e.pth")
+    parser.add_argument("--model", default="repvit_m2_3", help="timm model name, e.g. repvit_m1_1 or repvit_m1_5")
+    parser.add_argument("--dst", default=None, help="default: pretrain/<model>_distill_450e.pth")
     args = parser.parse_args()
+    args.dst = args.dst or f"pretrain/{args.model}_distill_450e.pth"
 
     from safetensors.torch import load_file
 
     src = args.src
     if src is None:
-        src = os.path.join(os.path.dirname(os.path.abspath(args.dst)) or ".", "repvit_m2_3_timm.safetensors")
+        src = os.path.join(os.path.dirname(os.path.abspath(args.dst)) or ".", f"{args.model}_timm.safetensors")
         if not os.path.exists(src):
             os.makedirs(os.path.dirname(src), exist_ok=True)
-            print("downloading", HF_URL)
-            urllib.request.urlretrieve(HF_URL, src)
+            url = HF_URL.format(model=args.model)
+            print("downloading", url)
+            urllib.request.urlretrieve(url, src)
 
     converted = convert(load_file(src))
     os.makedirs(os.path.dirname(os.path.abspath(args.dst)), exist_ok=True)

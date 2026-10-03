@@ -20,6 +20,9 @@ def get_args():
     parser.add_argument("--ckpt", type=str, default="work_dirs/LoGCAN_ResNet50_Loveda/epoch=45.ckpt")
     parser.add_argument("--tta", type=str, default="d4")
     parser.add_argument("--masks_output_dir", default=None)
+    parser.add_argument("--label_offset", type=int, default=1,
+                        help="added to the predicted class ids before saving: the official LoveDA labels are 1-7 (0 = no-data) while the "
+                             "model predicts 0-6. If the first server score looks wrong (a few %%), try --label_offset 0")
     return parser.parse_args()
 
 
@@ -66,7 +69,7 @@ if __name__ == "__main__":
             pred = raw_predictions.argmax(dim=1)
 
             for i in range(raw_predictions.shape[0]):
-                mask_pred = pred[i].cpu().numpy()
+                mask_pred = (pred[i].cpu().numpy() + args.label_offset).astype('uint8')
                 mask_name = str(img_id[i])
                 results.append((mask2RGB, mask_pred, cfg.dataset, masks_output_dir, mask_name))
 
