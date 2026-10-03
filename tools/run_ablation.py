@@ -25,6 +25,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAST = {'backbone.type': 'repvit_m1_1', 'backbone.out_indices': [3, 7, 21, 24],
         'backbone.init_cfg.checkpoint': 'pretrain/repvit_m1_1_distill_450e.pth', 'in_channel': [64, 128, 256, 512]}
 
+# RepViT-M1.5 (13.6M backbone): the middle point between M1.1 (7.8M) and M2.3 (22.4M); weights verified to convert cleanly
+MID = {'backbone.type': 'repvit_m1_5', 'backbone.out_indices': [5, 11, 37, 42],
+       'backbone.init_cfg.checkpoint': 'pretrain/repvit_m1_5_distill_450e.pth', 'in_channel': [64, 128, 256, 512]}
+
 # ordered by importance: if the budget runs out, the last ones are the ones that get skipped
 EXPERIMENTS = [
     ('exploit_only', dict(mode='exploit_only')),                 # LOGCAN++-style decoder = baseline
@@ -45,6 +49,8 @@ EXPERIMENTS = [
     ('m11_mamba_raster_only', dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'raster', 'scan_cfg.dirs': 2, 'scan_cfg.ratio': 0.25})),
     ('m11_explore_only',      dict(mode='explore_only', **FAST)),
     ('m11_exploit_only',      dict(mode='exploit_only', **FAST)),                       # accuracy reference, class-center attention
+    ('m15_mamba_conf_only',   dict(mode='mamba_only', **MID, **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25})),
+    ('m15_explore_only',      dict(mode='explore_only', **MID)),
 ]
 GROUPS = {
     'base': ['exploit_only', 'gated', 'sparse25', 'explore_only', 'sum', 'sparse10'],
@@ -53,6 +59,7 @@ GROUPS = {
     'light': ['exploit_only', 'mamba_conf25', 'mamba_conf25_only'],
     # the explore / exploit story: exploit alone, exploit + attention explore, exploit + Mamba explore in three scan
     # orders, and Mamba explore without the class-center attention
+    'mid': ['m15_mamba_conf_only', 'm15_explore_only'],
     'fast': ['m11_mamba_conf_only', 'm11_mamba_raster_only', 'm11_explore_only', 'm11_exploit_only'],
     'ee': ['exploit_only', 'sparse25', 'mamba_raster25', 'mamba_conf25', 'mamba_hybrid25', 'mamba_conf25_only'],                      # is the class-center attention needed?
 }

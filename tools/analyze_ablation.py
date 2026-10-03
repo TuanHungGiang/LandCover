@@ -34,6 +34,8 @@ ANATOMY = {
     'm11_mamba_raster_only': ('-', '-', 'top-25% uncertain', 'raster (M1.1 backbone)'),
     'm11_explore_only': ('-', 'dense', '-', '- (M1.1 backbone)'),
     'm11_exploit_only': ('yes', '-', '-', '- (M1.1 backbone)'),
+    'm15_mamba_conf_only': ('-', '-', 'top-25% uncertain', 'class/confidence (M1.5 backbone)'),
+    'm15_explore_only': ('-', 'dense', '-', '- (M1.5 backbone)'),
 }
 
 
