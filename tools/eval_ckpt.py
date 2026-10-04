@@ -10,7 +10,12 @@ published numbers (published methods evaluate whole 1024 images). This shows how
 settings:  full          the whole image in one forward pass
            tile<C>       C x C tiles without overlap            (tile512 = what training-time validation does)
            tile<C>s<S>   C x C tiles every S pixels, logits of overlapping pixels averaged (tile512s256)
---flip     also average with the horizontally flipped image (test-time augmentation, 2x the cost)
+           full-lr       whole image + the flip TTA of online_test.py (4 passes)
+           full-ms       whole image + flip and scales 0.75/1/1.25 (6 passes)
+           full-d4       the d4 TTA of online_test.py (flips + rot90 + 5 scales, 40 passes: ~1 h on the whole val set)
+The published LoveDA numbers of this code base were produced with the d4 TTA (online_test.py default), so the TTA lines
+are the ones to compare with them.
+--flip     also average with the horizontally flipped image (extra flip for the non-TTA settings, 2x the cost)
 """
 import argparse
 import ast
@@ -22,6 +27,20 @@ import time
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+
+
+def make_tta(kind):
+    import ttach as tta
+    if kind == 'lr':
+        t = tta.Compose([tta.HorizontalFlip(), tta.VerticalFlip()])
+    elif kind == 'ms':
+        t = tta.Compose([tta.HorizontalFlip(), tta.Scale(scales=[0.75, 1.0, 1.25], interpolation='bicubic', align_corners=False)])
+    elif kind == 'd4':
+        t = tta.Compose([tta.HorizontalFlip(), tta.VerticalFlip(), tta.Rotate90(angles=[90]),
+                         tta.Scale(scales=[0.5, 0.75, 1.0, 1.25, 1.5], interpolation='bicubic', align_corners=False)])
+    else:
+        raise SystemExit(f'unknown TTA {kind!r}')
+    return t
 
 
 def parse_setting(name):
@@ -39,7 +58,7 @@ def main():
     ap.add_argument('-c', '--config', required=True)
     ap.add_argument('--set', nargs='+', default=None, help='the same --set overrides the run was trained with')
     ap.add_argument('--ckpt', required=True)
-    ap.add_argument('--settings', nargs='+', default=['full', 'tile512', 'tile512s256'])
+    ap.add_argument('--settings', nargs='+', default=['full', 'tile512', 'tile512s256', 'full-lr', 'full-ms'])
     ap.add_argument('--batch', type=int, default=2)
     ap.add_argument('--flip', action='store_true')
     args = ap.parse_args()
@@ -69,15 +88,25 @@ def main():
     print(f'{args.ckpt}  (flip TTA: {args.flip})')
     print(f'\n{"setting":<14}{"mIoU":>7}{"OA":>7}  ' + ' '.join(f'{n[:7]:>8}' for n in names) + f'{"min":>6}')
     for setting in args.settings:
-        model.cfg.val_sliding = parse_setting(setting)
+        base, _, tta_kind = setting.partition('-')
+        if tta_kind and base != 'full':
+            raise SystemExit('TTA settings are whole-image only: full-lr, full-ms, full-d4')
+        model.cfg.val_sliding = parse_setting(base)
+        runner = model
+        if tta_kind:
+            import ttach as tta
+            runner = tta.SegmentationTTAWrapper(model, make_tta(tta_kind))
         loader = build_dataloader(cfg.dataset_config, mode='val')
         cm = torch.zeros(K, K, dtype=torch.long, device='cuda')
         t0 = time.time()
         with torch.no_grad():
             for batch in loader:
                 image, mask = batch[0].cuda(), batch[1].cuda()
-                logits, _ = model._val_forward(image, mask)
-                if args.flip:
+                if tta_kind:
+                    logits = runner(image, True)                  # same call as online_test.py
+                else:
+                    logits, _ = model._val_forward(image, mask)
+                if args.flip and not tta_kind:
                     flipped, _ = model._val_forward(image.flip(-1), mask.flip(-1))
                     logits = (logits + flipped.flip(-1)) / 2
                 pred = logits.argmax(1)
