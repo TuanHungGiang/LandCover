@@ -65,9 +65,13 @@ class GEE_Head(nn.Module):
                        fraction of pixels with the highest classifier entropy (residual add), so the
                        explore cost scales with the number of uncertain pixels, not with H*W
         'mamba'        exploit + a light state-space scan (basemodules/ssm_lite.py) over the uncertain pixels,
-                       configured by `scan_cfg` (order raster|conf|hybrid, dirs, ratio, expand, d_state,
+                       configured by `scan_cfg` (order raster|conf|hybrid|landcover, dirs, ratio, expand, d_state,
                        n_heads, dt_min, dt_max, chunk, stages); residual add, bypass elsewhere
         'mamba_only'   the same scan without the class-center attention (feature + scan residual)
+
+        The landcover order prepends confident class prototypes to frequency-balanced uncertain queries,
+        resets SSM state between classes, adds multi-frequency 2-D position, and optionally conditions the
+        prototypes on a pooled scene vector. Extra keys are passed through `scan_cfg`.
     """
 
     def __init__(self,

@@ -62,7 +62,8 @@ def main():
     feats = {k: torch.randn(args.batch, args.dim, n, n, device=device, requires_grad=True) for k, n in stages.items()}
     logits = {k: torch.randn(args.batch, 7, n, n, device=device) for k, n in stages.items()}
 
-    configs = [('raster', 4, 1.0), ('raster', 2, 0.25), ('conf', 2, 0.25), ('hybrid', 2, 0.25), ('conf', 2, 0.10)]
+    configs = [('raster', 4, 1.0), ('raster', 2, 0.25), ('conf', 2, 0.25), ('hybrid', 2, 0.25),
+               ('landcover', 2, 0.25), ('conf', 2, 0.10)]
     print(f'\n{"config":<22}{"chunk":>6}{"backend":>10}{"ckpt":>6}' + ''.join(f'{k + " ms":>14}' for k in stages)
           + f'{"sum ms":>10}{"peak MB":>10}{"max diff":>10}')
 

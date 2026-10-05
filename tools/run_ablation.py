@@ -46,6 +46,10 @@ EXPERIMENTS = [
     ('mamba_conf25_only',  dict(mode='mamba_only', **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25})),     # no class-center attention
     # fast model: RepViT-M1.1 backbone (7.8M params instead of 22.4M); needs pretrain/repvit_m1_1_distill_450e.pth
     ('m11_mamba_conf_only',   dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25})),
+    ('m11_mamba_landcover_only', dict(mode='mamba_only', **FAST,
+         **{'scan_cfg.order': 'landcover', 'scan_cfg.ratio': 0.25, 'scan_cfg.balance': 0.5,
+            'scan_cfg.anchor_topk': 16, 'scan_cfg.pos_bands': 4, 'scan_cfg.scene_condition': True,
+            'scan_cfg.chunk': 32})),
     ('m11_mamba_raster_only', dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'raster', 'scan_cfg.dirs': 2, 'scan_cfg.ratio': 0.25})),
     ('m11_explore_only',      dict(mode='explore_only', **FAST)),
     ('m11_exploit_only',      dict(mode='exploit_only', **FAST)),                       # accuracy reference, class-center attention
@@ -64,7 +68,8 @@ GROUPS = {
     # orders, and Mamba explore without the class-center attention
     'bg': ['m11_mamba_conf_only', 'm11_conf_bg07', 'm11_conf_bg05'],
     'mid': ['m15_mamba_conf_only', 'm15_explore_only'],
-    'fast': ['m11_mamba_conf_only', 'm11_mamba_raster_only', 'm11_explore_only', 'm11_exploit_only'],
+    'fast': ['m11_mamba_conf_only', 'm11_mamba_landcover_only', 'm11_mamba_raster_only',
+             'm11_explore_only', 'm11_exploit_only'],
     'ee': ['exploit_only', 'sparse25', 'mamba_raster25', 'mamba_conf25', 'mamba_hybrid25', 'mamba_conf25_only'],                      # is the class-center attention needed?
 }
 
