@@ -29,6 +29,15 @@ FAST = {'backbone.type': 'repvit_m1_1', 'backbone.out_indices': [3, 7, 21, 24],
 MID = {'backbone.type': 'repvit_m1_5', 'backbone.out_indices': [5, 11, 37, 42],
        'backbone.init_cfg.checkpoint': 'pretrain/repvit_m1_5_distill_450e.pth', 'in_channel': [64, 128, 256, 512]}
 
+
+def landcover_scan(ratio=0.25, selector='landcover'):
+    """Shared settings keep selector/budget ablations identical in every other respect."""
+    return {'scan_cfg.order': 'landcover', 'scan_cfg.ratio': ratio, 'scan_cfg.selector': selector,
+            'scan_cfg.balance': 0.5, 'scan_cfg.boundary_weight': 0.5, 'scan_cfg.confusion_weight': 0.5,
+            'scan_cfg.class_quota': 0.1, 'scan_cfg.presence_threshold': 0.01,
+            'scan_cfg.presence_peak': 0.35, 'scan_cfg.anchor_topk': 16, 'scan_cfg.pos_bands': 4,
+            'scan_cfg.scene_condition': True, 'scan_cfg.chunk': 32}
+
 # ordered by importance: if the budget runs out, the last ones are the ones that get skipped
 EXPERIMENTS = [
     ('exploit_only', dict(mode='exploit_only')),                 # LOGCAN++-style decoder = baseline
@@ -46,10 +55,10 @@ EXPERIMENTS = [
     ('mamba_conf25_only',  dict(mode='mamba_only', **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25})),     # no class-center attention
     # fast model: RepViT-M1.1 backbone (7.8M params instead of 22.4M); needs pretrain/repvit_m1_1_distill_450e.pth
     ('m11_mamba_conf_only',   dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'conf', 'scan_cfg.ratio': 0.25})),
-    ('m11_mamba_landcover_only', dict(mode='mamba_only', **FAST,
-         **{'scan_cfg.order': 'landcover', 'scan_cfg.ratio': 0.25, 'scan_cfg.balance': 0.5,
-            'scan_cfg.anchor_topk': 16, 'scan_cfg.pos_bands': 4, 'scan_cfg.scene_condition': True,
-            'scan_cfg.chunk': 32})),
+    ('m11_mamba_landcover_legacy', dict(mode='mamba_only', **FAST, **landcover_scan(selector='uncertainty'))),
+    ('m11_mamba_landcover_only', dict(mode='mamba_only', **FAST, **landcover_scan())),
+    ('m11_mamba_landcover50', dict(mode='mamba_only', **FAST, **landcover_scan(ratio=0.50))),
+    ('m11_mamba_landcover_dense', dict(mode='mamba_only', **FAST, **landcover_scan(ratio=1.0))),
     ('m11_mamba_raster_only', dict(mode='mamba_only', **FAST, **{'scan_cfg.order': 'raster', 'scan_cfg.dirs': 2, 'scan_cfg.ratio': 0.25})),
     ('m11_explore_only',      dict(mode='explore_only', **FAST)),
     ('m11_exploit_only',      dict(mode='exploit_only', **FAST)),                       # accuracy reference, class-center attention
@@ -68,8 +77,10 @@ GROUPS = {
     # orders, and Mamba explore without the class-center attention
     'bg': ['m11_mamba_conf_only', 'm11_conf_bg07', 'm11_conf_bg05'],
     'mid': ['m15_mamba_conf_only', 'm15_explore_only'],
-    'fast': ['m11_mamba_conf_only', 'm11_mamba_landcover_only', 'm11_mamba_raster_only',
+    'fast': ['m11_mamba_conf_only', 'm11_mamba_landcover_legacy', 'm11_mamba_landcover_only', 'm11_mamba_raster_only',
              'm11_explore_only', 'm11_exploit_only'],
+    'landcover_selector': ['m11_mamba_landcover_legacy', 'm11_mamba_landcover_only'],
+    'landcover_budget': ['m11_mamba_landcover_only', 'm11_mamba_landcover50', 'm11_mamba_landcover_dense'],
     'ee': ['exploit_only', 'sparse25', 'mamba_raster25', 'mamba_conf25', 'mamba_hybrid25', 'mamba_conf25_only'],                      # is the class-center attention needed?
 }
 

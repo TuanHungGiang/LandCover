@@ -36,7 +36,16 @@ model_config = dict(
         scan_cfg=dict(
             order='landcover',
             ratio=0.25,
+            # Keep the same unique-token budget, but spend it on LoveDA-specific errors: uncertain pixels,
+            # local boundaries, known confusion pairs and a small quota for classes evidenced in the scene.
+            selector='landcover',
             balance=0.5,
+            boundary_weight=0.5,
+            confusion_weight=0.5,
+            class_quota=0.1,
+            presence_threshold=0.01,
+            presence_peak=0.35,
+            confusion_pairs=((5, 6), (4, 6), (2, 0), (2, 4), (1, 0)),
             anchor_topk=16,
             pos_bands=4,
             scene_condition=True,

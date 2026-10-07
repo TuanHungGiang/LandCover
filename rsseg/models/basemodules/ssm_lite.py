@@ -18,6 +18,10 @@ SparseScanBlock  what is scanned and in which order, for land-cover maps:
                      prototype pooled from confident pixels, and scans towards frequency-balanced uncertain
                      queries.  Packing classes as separate batch rows resets the SSM state at every class
                      boundary and prevents arbitrary label-order contamination.
+                   * selector = 'landcover' spends the same sparse budget on entropy, local-boundary
+                     disagreement and known LoveDA confusion pairs, while reserving a small conditional
+                     quota for classes that are actually present.  This improves error coverage without
+                     increasing the number of unique scanned pixels.
 """
 import math
 from functools import partial
@@ -128,18 +132,31 @@ class SSDLite(nn.Module):
 
 class SparseScanBlock(nn.Module):
     ORDERS = ('raster', 'conf', 'hybrid', 'landcover')
+    SELECTORS = ('uncertainty', 'landcover')
 
     def __init__(self, dim, order='conf', dirs=2, ratio=0.25, expand=1, d_state=8, n_heads=4,
                  dt_min=1e-3, dt_max=1e-1, chunk=64, backend='torch', use_checkpoint=False,
                  balance=0.5, anchor_topk=16, pos_bands=4, scene_condition=True,
+                 selector='uncertainty', boundary_weight=0.5, confusion_weight=0.5,
+                 class_quota=0.1, presence_threshold=0.01, presence_peak=0.35,
+                 confusion_pairs=((5, 6), (4, 6), (2, 0), (2, 4), (1, 0)),
                  warmup_epochs=0, ramp_epochs=0):
         super().__init__()
         assert order in self.ORDERS and dirs in (2, 4), (order, dirs)
+        assert selector in self.SELECTORS, selector
         assert 0. <= ratio <= 1., ratio
         assert 0. <= balance <= 1., balance
+        assert boundary_weight >= 0. and confusion_weight >= 0.
+        assert 0. <= class_quota <= 1.
+        assert 0. <= presence_threshold <= 1. and 0. <= presence_peak <= 1.
         assert anchor_topk > 0 and pos_bands > 0
         self.order, self.dirs, self.ratio = order, dirs, ratio
         self.balance, self.anchor_topk = balance, anchor_topk
+        self.selector = selector
+        self.boundary_weight, self.confusion_weight = boundary_weight, confusion_weight
+        self.class_quota = class_quota
+        self.presence_threshold, self.presence_peak = presence_threshold, presence_peak
+        self.confusion_pairs = tuple(tuple(int(v) for v in pair) for pair in confusion_pairs)
         self.warmup_epochs, self.ramp_epochs, self.current_epoch = int(warmup_epochs), int(ramp_epochs), 0
         self.pos_bands = pos_bands if order == 'landcover' else 1
         self.local = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
@@ -152,6 +169,9 @@ class SparseScanBlock(nn.Module):
         self.last_query_conf = None
         self.last_anchor_conf = None
         self.last_selected_per_class = None
+        self.last_boundary_coverage = None
+        self.last_confusion_coverage = None
+        self.last_quota_fraction = None
 
     def set_epoch(self, epoch):
         self.current_epoch = int(epoch)
@@ -187,7 +207,81 @@ class SparseScanBlock(nn.Module):
         rev = torch.where(is_query, lengths.unsqueeze(1) - pos, pos)
         return x.gather(1, rev.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
 
-    def _forward_landcover(self, feat, logits, tokens, conf, pred):
+    def _landcover_queries(self, probs, entropy, pred, budget):
+        """Choose exactly ``budget`` unique pixels using land-cover failure signals.
+
+        Entropy alone misses confident boundary errors.  The boundary term measures disagreement with a
+        local 3x3 probability average, while the confusion term targets the LoveDA pairs that dominate the
+        weak classes (forest/agriculture, barren/agriculture, road/background, road/barren and
+        building/background).  A small quota is only activated for a class when both its predicted count
+        and its soft probability evidence indicate that it is present; absent classes are never forced.
+        """
+        Bsz, K, H, W = probs.shape
+        HW = H * W
+        flat_probs = probs.flatten(2)
+
+        # Replicate padding prevents crop/tile borders from looking like artificial semantic boundaries.
+        local_probs = F.avg_pool2d(F.pad(probs, (1, 1, 1, 1), mode='replicate'),
+                                   kernel_size=3, stride=1)
+        boundary = 0.5 * (probs - local_probs).abs().sum(1).flatten(1)
+        boundary = boundary.clamp_(0., 1.)
+
+        confusion = torch.zeros_like(boundary)
+        for a, b in self.confusion_pairs:
+            if a < K and b < K:
+                # Peaks when both classes are plausible; zero when either class has no support.
+                pair_score = 2. * torch.minimum(flat_probs[:, a], flat_probs[:, b])
+                confusion = torch.maximum(confusion, pair_score)
+
+        # Use soft class mass rather than hard counts to avoid extreme boosts from isolated false labels.
+        class_mass = flat_probs.sum(2).clamp_min_(1.)
+        pixel_mass = class_mass.gather(1, pred)
+        rarity = (HW / pixel_mass).pow(self.balance)
+        rarity = (rarity / rarity.mean(1, keepdim=True).clamp_min(1e-6)).clamp_(0.5, 4.)
+        score = (entropy + self.boundary_weight * boundary +
+                 self.confusion_weight * confusion) * rarity
+
+        # Reserve at most class_quota of the budget.  Each active predicted class receives the same small
+        # minimum; unused/duplicate slots automatically return to the global score through the final top-k.
+        forced = torch.zeros(Bsz, HW, dtype=torch.bool, device=probs.device)
+        quota_total = int(round(self.class_quota * budget))
+        if quota_total > 0:
+            pred_counts = torch.zeros(Bsz, K, device=probs.device, dtype=probs.dtype)
+            pred_counts.scatter_add_(1, pred, torch.ones_like(pred, dtype=probs.dtype))
+            peak = flat_probs.amax(2)
+            present = ((class_mass / HW) >= self.presence_threshold) & (peak >= self.presence_peak)
+            present &= pred_counts > 0
+            # Divide exactly quota_total slots among active classes (remainder goes to the first active
+            # classes).  This keeps the quota bounded even at the coarse stage where 10% can be < K.
+            active_count = present.sum(1).clamp_min(1)
+            base = torch.div(quota_total, active_count, rounding_mode='floor')
+            remainder = quota_total - base * active_count
+            active_rank = present.cumsum(1) - 1
+            quota_per_class = (base.unsqueeze(1) +
+                               (active_rank < remainder.unsqueeze(1)).to(base.dtype)) * present
+            classes = torch.arange(K, device=probs.device).view(1, K, 1)
+            candidate_score = score.unsqueeze(1).masked_fill(pred.unsqueeze(1) != classes, float('-inf'))
+            quota_value, quota_idx = candidate_score.topk(min(quota_total, HW), dim=2)
+            slot = torch.arange(quota_idx.shape[2], device=probs.device).view(1, 1, -1)
+            quota_valid = (slot < quota_per_class.unsqueeze(-1)) & torch.isfinite(quota_value)
+            batch_idx = torch.arange(Bsz, device=probs.device).view(Bsz, 1, 1).expand_as(quota_idx)
+            forced[batch_idx[quota_valid], quota_idx[quota_valid]] = True
+
+        # Forced entries rank before ordinary entries but retain their relative land-cover score.  topk
+        # still returns exactly budget unique indices even if fewer classes are present.
+        boost = score.amax(1, keepdim=True).clamp_min(1.) + 1.
+        q_idx = (score + forced.to(score.dtype) * boost).topk(budget, dim=1).indices
+        selected = torch.zeros_like(forced).scatter(1, q_idx, True)
+        denom_boundary = (boundary > boundary.mean(1, keepdim=True)).sum(1).clamp_min(1)
+        denom_confusion = (confusion > 0.25).sum(1).clamp_min(1)
+        self.last_boundary_coverage = ((selected & (boundary > boundary.mean(1, keepdim=True))).sum(1) /
+                                       denom_boundary).mean().detach()
+        self.last_confusion_coverage = ((selected & (confusion > 0.25)).sum(1) /
+                                        denom_confusion).mean().detach()
+        self.last_quota_fraction = ((selected & forced).sum(1).float() / budget).mean().detach()
+        return q_idx
+
+    def _forward_landcover(self, feat, logits, tokens, probs, entropy, conf, pred):
         """Anchor-to-uncertain scan with independent state for every image/class pair.
 
         A class prototype is pooled from its most confident pixels and placed before that class's
@@ -203,14 +297,17 @@ class SparseScanBlock(nn.Module):
         else:
             scene = torch.zeros_like(scene)
 
-        # Frequency-balanced global routing.  balance=0 is the original global uncertainty top-k;
-        # balance=0.5 (default) boosts rare predicted classes by inverse-sqrt frequency without Python loops
-        # or a hard per-class quota.  Exactly `budget` image tokens are still selected.
-        class_counts = torch.zeros(Bsz, K, device=feat.device, dtype=conf.dtype)
-        class_counts.scatter_add_(1, pred, torch.ones_like(conf))
-        pixel_count = class_counts.gather(1, pred).clamp_min_(1.)
-        rarity = (HW / pixel_count).pow(self.balance)
-        q_idx = ((1. - conf) * rarity).topk(budget, dim=1).indices
+        # Keep the legacy selector for exact historical ablations.  The land-cover selector changes only
+        # which unique pixels consume the budget; sequence packing, Mamba and residual scattering stay the
+        # same so its accuracy/cost effect can be isolated.
+        if self.selector == 'landcover':
+            q_idx = self._landcover_queries(probs, entropy, pred, budget)
+        else:
+            class_counts = torch.zeros(Bsz, K, device=feat.device, dtype=conf.dtype)
+            class_counts.scatter_add_(1, pred, torch.ones_like(conf))
+            pixel_count = class_counts.gather(1, pred).clamp_min_(1.)
+            rarity = (HW / pixel_count).pow(self.balance)
+            q_idx = ((1. - conf) * rarity).topk(budget, dim=1).indices
         q_pred = pred.gather(1, q_idx)
         q_conf = conf.gather(1, q_idx)
 
@@ -295,7 +392,7 @@ class SparseScanBlock(nn.Module):
 
         if self.order == 'landcover':
             # Indices are discrete routing decisions; feature/prototype computation remains differentiable.
-            return self._forward_landcover(feat, logits, tokens, conf, pred) * routing_scale
+            return self._forward_landcover(feat, logits, tokens, p, ent.flatten(1), conf, pred) * routing_scale
 
         with torch.no_grad():
             k = HW if self.ratio >= 1 else max(1, int(self.ratio * HW))
