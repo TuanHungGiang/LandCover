@@ -195,7 +195,7 @@ class BN_Linear(torch.nn.Sequential):
         return m
 
 class RepViT(nn.Module):
-    def __init__(self, cfgs, distillation=False, pretrained=None, init_cfg=None, out_indices=[]):
+    def __init__(self, cfgs, distillation=False, pretrained=None, init_cfg=None, out_indices=[], freeze_bn=None):
         super(RepViT, self).__init__()
         # setting of inverted residual blocks
         self.cfgs = cfgs
@@ -218,7 +218,7 @@ class RepViT(nn.Module):
         self.out_indices = out_indices
         # BN statistics are frozen only when starting from a pretrained checkpoint;
         # with init_cfg=None the backbone is trained from scratch and BN must update.
-        self.freeze_bn = init_cfg is not None
+        self.freeze_bn = (init_cfg is not None) if freeze_bn is None else bool(freeze_bn)
         if self.init_cfg is not None:
             self.init_weights()
         self = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self)
@@ -301,7 +301,8 @@ def repvit_m1_1(pretrained=False, num_classes = 1000, distillation=False, init_c
         [3,   2, 512, 1, 1, 1],
         [3,   2, 512, 0, 1, 1]
     ]
-    return RepViT(cfgs, init_cfg=init_cfg, pretrained=pretrained, distillation=distillation, out_indices=out_indices)
+    return RepViT(cfgs, init_cfg=init_cfg, pretrained=pretrained, distillation=distillation,
+                  out_indices=out_indices, **kwargs)
 
 def repvit_m1_5(pretrained=False, num_classes = 1000, distillation=False, init_cfg=None, out_indices=[], **kwargs):
     """
@@ -352,7 +353,8 @@ def repvit_m1_5(pretrained=False, num_classes = 1000, distillation=False, init_c
         [3,   2, 512, 1, 1, 1],
         [3,   2, 512, 0, 1, 1]
     ]
-    return RepViT(cfgs, init_cfg=init_cfg, pretrained=pretrained, distillation=distillation, out_indices=out_indices)
+    return RepViT(cfgs, init_cfg=init_cfg, pretrained=pretrained, distillation=distillation,
+                  out_indices=out_indices, **kwargs)
 
 
 def repvit_m2_3(pretrained=False, num_classes = 1000, distillation=False, init_cfg=None, out_indices=[], **kwargs):
@@ -420,4 +422,5 @@ def repvit_m2_3(pretrained=False, num_classes = 1000, distillation=False, init_c
         # [3,   2, 640, 1, 1, 1],
         # [3,   2, 640, 0, 1, 1]
     ]    
-    return RepViT(cfgs, init_cfg=init_cfg, pretrained=pretrained, distillation=distillation, out_indices=out_indices)
+    return RepViT(cfgs, init_cfg=init_cfg, pretrained=pretrained, distillation=distillation,
+                  out_indices=out_indices, **kwargs)

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from collections import Counter
 from rsseg.losses.ce_loss import CELoss
+from rsseg.losses.dice_loss import DiceLoss, Dice_Loss, CEDiceLoss
 class myLoss(nn.Module):
     def __init__(self, loss_name=['CELoss'], loss_weight=[1.0], ignore_index=255, reduction='mean', **kwargs):
         super(myLoss, self).__init__()

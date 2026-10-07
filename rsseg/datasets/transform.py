@@ -51,10 +51,10 @@ class RandomScale(object):
         self.mode = mode
 
     def __call__(self, img, mask):
-        oh, ow = img.size
+        ow, oh = img.size
         scale_amt = 1.0
         if self.mode == 'value':
-            scale_amt = np.random.choice(self.scale_list, 1)
+            scale_amt = float(np.random.choice(self.scale_list))
         elif self.mode == 'range':
             scale_amt = random.uniform(self.scale_list[0], self.scale_list[-1])
         h = int(scale_amt * oh)
@@ -231,6 +231,18 @@ class RandomVerticalFlip(object):
             return img.transpose(Image.FLIP_TOP_BOTTOM), mask.transpose(
                 Image.FLIP_TOP_BOTTOM)
         return img, mask
+
+
+class RandomRotate90(object):
+    """Rotate image and mask together by a random multiple of 90 degrees."""
+
+    def __call__(self, img, mask):
+        k = random.randrange(4)
+        if k == 0:
+            return img, mask
+        ops = (Image.ROTATE_90, Image.ROTATE_180, Image.ROTATE_270)
+        op = ops[k - 1]
+        return img.transpose(op), mask.transpose(op)
 
 
 class FreeScale(object):

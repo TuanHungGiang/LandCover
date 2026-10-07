@@ -116,6 +116,11 @@ class myTrain(LightningModule):
         loader = build_dataloader(self.cfg.dataset_config, mode='train')
         return loader
 
+    def on_train_epoch_start(self):
+        setter = getattr(self.net.seghead, 'set_epoch', None)
+        if setter is not None:
+            setter(self.current_epoch)
+
     def val_dataloader(self):
         loader = build_dataloader(self.cfg.dataset_config, mode='val')
         return loader

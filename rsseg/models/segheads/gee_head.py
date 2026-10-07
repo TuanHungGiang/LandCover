@@ -113,6 +113,11 @@ class GEE_Head(nn.Module):
         self.catconv = nn.ModuleList([conv_3x3(C * 2, C) for _ in range(len(in_channel) - 1)])
         self.final = conv_3x3(C, C)
 
+    def set_epoch(self, epoch):
+        if hasattr(self, 'scan'):
+            for block in self.scan.values():
+                block.set_epoch(epoch)
+
     def _sparse_stage(self, i, feat, logits, global_center):
         out = self.exploit[i](feat, global_center)
         B, C, H, W = feat.shape

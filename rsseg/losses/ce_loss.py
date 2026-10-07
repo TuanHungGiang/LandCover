@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 class CELoss(nn.Module):
-    def __init__(self, ignore_index=255, reduction='mean', class_weight=None):
+    def __init__(self, ignore_index=255, reduction='mean', class_weight=None, **kwargs):
         """class_weight: optional list with one weight per class (e.g. [0.7, 1, 1, 1, 1, 1, 1] makes the catch-all
         class 0 count less); applied to every CE term of the model (main + deep supervision)."""
         super(CELoss, self).__init__()

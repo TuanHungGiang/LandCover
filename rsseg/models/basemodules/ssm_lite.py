@@ -131,7 +131,8 @@ class SparseScanBlock(nn.Module):
 
     def __init__(self, dim, order='conf', dirs=2, ratio=0.25, expand=1, d_state=8, n_heads=4,
                  dt_min=1e-3, dt_max=1e-1, chunk=64, backend='torch', use_checkpoint=False,
-                 balance=0.5, anchor_topk=16, pos_bands=4, scene_condition=True):
+                 balance=0.5, anchor_topk=16, pos_bands=4, scene_condition=True,
+                 warmup_epochs=0, ramp_epochs=0):
         super().__init__()
         assert order in self.ORDERS and dirs in (2, 4), (order, dirs)
         assert 0. <= ratio <= 1., ratio
@@ -139,6 +140,7 @@ class SparseScanBlock(nn.Module):
         assert anchor_topk > 0 and pos_bands > 0
         self.order, self.dirs, self.ratio = order, dirs, ratio
         self.balance, self.anchor_topk = balance, anchor_topk
+        self.warmup_epochs, self.ramp_epochs, self.current_epoch = int(warmup_epochs), int(ramp_epochs), 0
         self.pos_bands = pos_bands if order == 'landcover' else 1
         self.local = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
         self.norm = nn.LayerNorm(dim)
@@ -150,6 +152,18 @@ class SparseScanBlock(nn.Module):
         self.last_query_conf = None
         self.last_anchor_conf = None
         self.last_selected_per_class = None
+
+    def set_epoch(self, epoch):
+        self.current_epoch = int(epoch)
+
+    def _routing_scale(self):
+        if not self.training:
+            return 1.0
+        if self.current_epoch < self.warmup_epochs:
+            return 0.0
+        if self.ramp_epochs <= 0:
+            return 1.0
+        return min(1.0, (self.current_epoch - self.warmup_epochs + 1) / self.ramp_epochs)
 
     @staticmethod
     def _perm(key):
@@ -264,6 +278,10 @@ class SparseScanBlock(nn.Module):
         return full.transpose(1, 2).reshape(Bsz, C, H, W)
 
     def forward(self, feat, logits):
+        routing_scale = self._routing_scale()
+        if routing_scale == 0.0:
+            self.last_conf = logits.new_tensor(0.0)
+            return torch.zeros_like(feat)
         Bsz, C, H, W = feat.shape
         HW = H * W
         K = logits.shape[1]
@@ -277,7 +295,7 @@ class SparseScanBlock(nn.Module):
 
         if self.order == 'landcover':
             # Indices are discrete routing decisions; feature/prototype computation remains differentiable.
-            return self._forward_landcover(feat, logits, tokens, conf, pred)
+            return self._forward_landcover(feat, logits, tokens, conf, pred) * routing_scale
 
         with torch.no_grad():
             k = HW if self.ratio >= 1 else max(1, int(self.ratio * HW))
@@ -316,4 +334,4 @@ class SparseScanBlock(nn.Module):
         full = torch.zeros(Bsz, HW, C, dtype=delta.dtype, device=delta.device)
         full = full.scatter(1, idx.unsqueeze(-1).expand(-1, -1, C), delta)                # zero at bypassed pixels
         self.last_conf = conf.mean().detach()
-        return full.transpose(1, 2).reshape(Bsz, C, H, W)
+        return full.transpose(1, 2).reshape(Bsz, C, H, W) * routing_scale

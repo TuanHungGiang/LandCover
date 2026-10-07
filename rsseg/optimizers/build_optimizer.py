@@ -11,11 +11,19 @@ class lambdax:
 
 
 def get_optimizer(cfg, net):
-    # catalyst is only needed by the 'multi' lr mode and the SGD+Lookahead branch, so import it lazily
+    # Fine-tuning uses a lower LR for the pretrained backbone and the base LR for the new decoder.
+    # Build the groups locally so Kaggle does not need catalyst just for differential learning rates.
     if cfg.lr_mode == 'multi':
-        from catalyst import utils
-        layerwise_params = {"backbone.*": dict(lr=cfg.backbone_lr, weight_decay=cfg.backbone_weight_decay)}
-        net_params = utils.process_model_params(net, layerwise_params=layerwise_params)
+        backbone_params, other_params = [], []
+        for name, param in net.named_parameters():
+            if not param.requires_grad:
+                continue
+            (backbone_params if name.startswith('backbone.') else other_params).append(param)
+        net_params = [
+            dict(params=backbone_params, lr=cfg.backbone_lr,
+                 weight_decay=getattr(cfg, 'backbone_weight_decay', cfg.weight_decay)),
+            dict(params=other_params, lr=cfg.lr, weight_decay=cfg.weight_decay),
+        ]
     else:
         net_params = net.parameters()
 
@@ -40,9 +48,26 @@ def get_scheduler(cfg, optimizer):
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda1)
     elif cfg.type == 'CosineAnnealingLR':
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.max_epoch, eta_min=1e-6)
+    elif cfg.type == 'WarmupCosine':
+        warmup = max(0, int(getattr(cfg, 'warmup_epochs', 0)))
+        eta_min = float(getattr(cfg, 'eta_min', 1e-6))
+
+        def make_lambda(base_lr):
+            eta_ratio = min(1.0, eta_min / base_lr)
+
+            def lr_lambda(epoch):
+                if warmup and epoch < warmup:
+                    return float(epoch + 1) / warmup
+                progress = (epoch - warmup) / max(1, cfg.max_epoch - warmup)
+                cosine = 0.5 * (1.0 + math.cos(math.pi * min(max(progress, 0.0), 1.0)))
+                return eta_ratio + (1.0 - eta_ratio) * cosine
+            return lr_lambda
+
+        scheduler = optim.lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=[make_lambda(group['lr']) for group in optimizer.param_groups])
     else:
         raise KeyError("The scheduler type ( %s ) doesn't exist!!!" % cfg.type)
-    
+
     return scheduler
 
 def build_optimizer(cfg, net):
@@ -55,11 +80,5 @@ def build_optimizer(cfg, net):
     #     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.max_epoch, eta_min=1e-6)
     # else:
     #     raise KeyError("The scheduler type ( %s ) doesn't exist!!!" % cfg.type)
-    
+
     return optimizer, scheduler
-
-
-    
-
-    
-    
