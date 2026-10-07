@@ -8,6 +8,10 @@ _base_ = './gee_ablation.py'
 epoch = 96
 check_val_every_n_epoch = 4
 exp_name = 'work_dirs/m11_mamba_landcover'
+# The scan is intentionally bypassed during the first six warm-up epochs, so its parameters have no
+# gradients in that phase. DDP must tolerate those temporarily-unused parameters; single-GPU training
+# does not need this flag, but keeping it in the shared recipe makes 1/2-GPU runs behaviourally identical.
+ddp_find_unused = True
 
 dataset_config = dict(
     train_mode=dict(
