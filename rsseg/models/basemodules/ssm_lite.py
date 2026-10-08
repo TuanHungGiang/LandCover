@@ -132,7 +132,7 @@ class SSDLite(nn.Module):
 
 class SparseScanBlock(nn.Module):
     ORDERS = ('raster', 'conf', 'hybrid', 'landcover')
-    SELECTORS = ('uncertainty', 'landcover')
+    SELECTORS = ('uncertainty', 'landcover', 'landcover_v2')
 
     def __init__(self, dim, order='conf', dirs=2, ratio=0.25, expand=1, d_state=8, n_heads=4,
                  dt_min=1e-3, dt_max=1e-1, chunk=64, backend='torch', use_checkpoint=False,
@@ -140,6 +140,9 @@ class SparseScanBlock(nn.Module):
                  selector='uncertainty', boundary_weight=0.5, confusion_weight=0.5,
                  class_quota=0.1, presence_threshold=0.01, presence_peak=0.35,
                  confusion_pairs=((5, 6), (4, 6), (2, 0), (2, 4), (1, 0)),
+                 selector_weights=(0.35, 0.25, 0.25, 0.15),
+                 selector_quotas=(0.35, 0.25, 0.25, 0.15),
+                 num_prototypes=1, confidence_gate=False,
                  warmup_epochs=0, ramp_epochs=0):
         super().__init__()
         assert order in self.ORDERS and dirs in (2, 4), (order, dirs)
@@ -150,6 +153,9 @@ class SparseScanBlock(nn.Module):
         assert 0. <= class_quota <= 1.
         assert 0. <= presence_threshold <= 1. and 0. <= presence_peak <= 1.
         assert anchor_topk > 0 and pos_bands > 0
+        assert len(selector_weights) == 4 and sum(selector_weights) > 0.
+        assert len(selector_quotas) == 4 and sum(selector_quotas) > 0.
+        assert num_prototypes in (1, 2), num_prototypes
         self.order, self.dirs, self.ratio = order, dirs, ratio
         self.balance, self.anchor_topk = balance, anchor_topk
         self.selector = selector
@@ -157,6 +163,12 @@ class SparseScanBlock(nn.Module):
         self.class_quota = class_quota
         self.presence_threshold, self.presence_peak = presence_threshold, presence_peak
         self.confusion_pairs = tuple(tuple(int(v) for v in pair) for pair in confusion_pairs)
+        weight_sum = float(sum(selector_weights))
+        self.selector_weights = tuple(float(v) / weight_sum for v in selector_weights)
+        quota_sum = float(sum(selector_quotas))
+        self.selector_quotas = tuple(float(v) / quota_sum for v in selector_quotas)
+        self.num_prototypes = int(num_prototypes)
+        self.confidence_gate = bool(confidence_gate)
         self.warmup_epochs, self.ramp_epochs, self.current_epoch = int(warmup_epochs), int(ramp_epochs), 0
         self.pos_bands = pos_bands if order == 'landcover' else 1
         self.local = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
@@ -164,6 +176,11 @@ class SparseScanBlock(nn.Module):
         self.pos = nn.Linear(4 * self.pos_bands, dim)
         self.scene_proj = (nn.Linear(dim, dim, bias=False)
                            if order == 'landcover' and scene_condition else None)
+        self.gate_proj = nn.Linear(3, 1) if order == 'landcover' and confidence_gate else None
+        if self.gate_proj is not None:
+            with torch.no_grad():
+                self.gate_proj.weight.copy_(torch.tensor([[1.0, 0.5, 0.5]]))
+                self.gate_proj.bias.fill_(-0.5)
         self.ssm = SSDLite(dim, expand, d_state, n_heads, dt_min, dt_max, chunk, backend, use_checkpoint)
         self.last_conf = None
         self.last_query_conf = None
@@ -172,6 +189,7 @@ class SparseScanBlock(nn.Module):
         self.last_boundary_coverage = None
         self.last_confusion_coverage = None
         self.last_quota_fraction = None
+        self.last_gate = None
 
     def set_epoch(self, epoch):
         self.current_epoch = int(epoch)
@@ -199,13 +217,43 @@ class SparseScanBlock(nn.Module):
         return torch.cat([x.sin(), x.cos(), y.sin(), y.cos()], dim=-1).to(dtype)
 
     @staticmethod
-    def _reverse_queries(x, lengths):
-        """Keep the class prototype first and reverse only the valid query suffix."""
+    def _reverse_queries(x, lengths, prefix_len=1):
+        """Keep scene/class prototypes first and reverse only the valid query suffix."""
         L = x.shape[1]
         pos = torch.arange(L, device=x.device).unsqueeze(0).expand(x.shape[0], -1)
-        is_query = (pos > 0) & (pos < lengths.unsqueeze(1))
-        rev = torch.where(is_query, lengths.unsqueeze(1) - pos, pos)
+        is_query = (pos >= prefix_len) & (pos < lengths.unsqueeze(1))
+        rev = torch.where(is_query, lengths.unsqueeze(1) + prefix_len - 1 - pos, pos)
         return x.gather(1, rev.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+
+    @staticmethod
+    def _rank01(value, valid=None):
+        """Per-image percentile rank, with invalid/zero-support entries pinned to zero."""
+        Bsz, HW = value.shape
+        order = value.argsort(dim=1)
+        rank = torch.empty_like(value)
+        scale = max(HW - 1, 1)
+        values = torch.arange(HW, device=value.device, dtype=value.dtype) / scale
+        rank.scatter_(1, order, values.unsqueeze(0).expand(Bsz, -1))
+        if valid is not None:
+            rank = rank * valid.to(rank.dtype)
+        return rank
+
+    def _landcover_signals(self, probs, pred):
+        """Return boundary, known-pair confusion, rarity and soft class mass."""
+        _, K, H, W = probs.shape
+        HW = H * W
+        flat_probs = probs.flatten(2)
+        local_probs = F.avg_pool2d(F.pad(probs, (1, 1, 1, 1), mode='replicate'),
+                                   kernel_size=3, stride=1)
+        boundary = (0.5 * (probs - local_probs).abs().sum(1)).flatten(1).clamp_(0., 1.)
+        confusion = torch.zeros_like(boundary)
+        for a, b in self.confusion_pairs:
+            if a < K and b < K:
+                confusion = torch.maximum(confusion, 2. * torch.minimum(flat_probs[:, a], flat_probs[:, b]))
+        class_mass = flat_probs.sum(2).clamp_min_(1.)
+        rarity = (HW / class_mass.gather(1, pred)).pow(self.balance)
+        rarity = (rarity / rarity.mean(1, keepdim=True).clamp_min(1e-6)).clamp_(0.5, 4.)
+        return boundary, confusion, rarity, class_mass
 
     def _landcover_queries(self, probs, entropy, pred, budget):
         """Choose exactly ``budget`` unique pixels using land-cover failure signals.
@@ -281,6 +329,69 @@ class SparseScanBlock(nn.Module):
         self.last_quota_fraction = ((selected & forced).sum(1).float() / budget).mean().detach()
         return q_idx
 
+    def _landcover_queries_v2(self, probs, entropy, pred, budget, signals):
+        """Rank-normalized selector with explicit quotas and an exact unique-token budget."""
+        Bsz, K, H, W = probs.shape
+        HW = H * W
+        flat_probs = probs.flatten(2)
+        boundary, confusion, rarity, class_mass = signals
+        rank_signals = (
+            self._rank01(entropy),
+            self._rank01(boundary, boundary > 0),
+            self._rank01(confusion, confusion > 0),
+            self._rank01((HW / class_mass).pow(self.balance)).gather(1, pred),
+        )
+        score = sum(w * rank for w, rank in zip(self.selector_weights, rank_signals))
+
+        raw_quota = [budget * q for q in self.selector_quotas]
+        quota = [int(v) for v in raw_quota]
+        remainder = budget - sum(quota)
+        order = sorted(range(4), key=lambda i: raw_quota[i] - quota[i], reverse=True)
+        for i in order[:remainder]:
+            quota[i] += 1
+
+        forced = torch.zeros(Bsz, HW, dtype=torch.bool, device=probs.device)
+        signal_valid = (None, boundary > 0, confusion > 0)
+        for signal, valid, slots in zip(rank_signals[:3], signal_valid, quota[:3]):
+            if slots <= 0:
+                continue
+            _, idx = signal.topk(min(slots, HW), dim=1)
+            keep = torch.ones_like(idx, dtype=torch.bool) if valid is None else valid.gather(1, idx)
+            batch_idx = torch.arange(Bsz, device=probs.device).unsqueeze(1).expand_as(idx)
+            forced[batch_idx[keep], idx[keep]] = True
+
+        class_slots = quota[3]
+        if class_slots > 0:
+            pred_counts = torch.zeros(Bsz, K, device=probs.device, dtype=probs.dtype)
+            pred_counts.scatter_add_(1, pred, torch.ones_like(pred, dtype=probs.dtype))
+            peak = flat_probs.amax(2)
+            present = ((class_mass / HW) >= self.presence_threshold) & (peak >= self.presence_peak)
+            present &= pred_counts > 0
+            active_count = present.sum(1).clamp_min(1)
+            base = torch.div(class_slots, active_count, rounding_mode='floor')
+            remainder_per_image = class_slots - base * active_count
+            active_rank = present.cumsum(1) - 1
+            quota_per_class = (base.unsqueeze(1) +
+                               (active_rank < remainder_per_image.unsqueeze(1)).to(base.dtype)) * present
+            classes = torch.arange(K, device=probs.device).view(1, K, 1)
+            candidate = score.unsqueeze(1).masked_fill(pred.unsqueeze(1) != classes, float('-inf'))
+            value, idx = candidate.topk(min(class_slots, HW), dim=2)
+            slot = torch.arange(idx.shape[2], device=probs.device).view(1, 1, -1)
+            keep = (slot < quota_per_class.unsqueeze(-1)) & torch.isfinite(value)
+            batch_idx = torch.arange(Bsz, device=probs.device).view(Bsz, 1, 1).expand_as(idx)
+            forced[batch_idx[keep], idx[keep]] = True
+
+        boost = score.amax(1, keepdim=True).clamp_min(1.) + 1.
+        q_idx = (score + forced.to(score.dtype) * boost).topk(budget, dim=1).indices
+        selected = torch.zeros_like(forced).scatter(1, q_idx, True)
+        boundary_mask = boundary > boundary.mean(1, keepdim=True)
+        confusion_mask = confusion > 0.25
+        self.last_boundary_coverage = ((selected & boundary_mask).sum(1) /
+                                       boundary_mask.sum(1).clamp_min(1)).mean().detach()
+        self.last_confusion_coverage = ((selected & confusion_mask).sum(1) /
+                                        confusion_mask.sum(1).clamp_min(1)).mean().detach()
+        self.last_quota_fraction = ((selected & forced).sum(1).float() / budget).mean().detach()
+        return q_idx
     def _forward_landcover(self, feat, logits, tokens, probs, entropy, conf, pred):
         """Anchor-to-uncertain scan with independent state for every image/class pair.
 
@@ -297,10 +408,12 @@ class SparseScanBlock(nn.Module):
         else:
             scene = torch.zeros_like(scene)
 
-        # Keep the legacy selector for exact historical ablations.  The land-cover selector changes only
-        # which unique pixels consume the budget; sequence packing, Mamba and residual scattering stay the
-        # same so its accuracy/cost effect can be isolated.
-        if self.selector == 'landcover':
+        # V1 remains available for exact historical ablations. V2 changes selection, prototypes and
+        # residual gating while preserving the exact same number of unique scanned image tokens.
+        signals = self._landcover_signals(probs, pred)
+        if self.selector == 'landcover_v2':
+            q_idx = self._landcover_queries_v2(probs, entropy, pred, budget, signals)
+        elif self.selector == 'landcover':
             q_idx = self._landcover_queries(probs, entropy, pred, budget)
         else:
             class_counts = torch.zeros(Bsz, K, device=feat.device, dtype=conf.dtype)
@@ -324,21 +437,38 @@ class SparseScanBlock(nn.Module):
         one_hot = F.one_hot(q_pred, K)
         pos_in_class = (one_hot.cumsum(1) - 1).gather(2, q_pred.unsqueeze(-1)).squeeze(-1)
 
-        # One differentiable prototype per image/class, pooled from the class's most confident pixels.
-        # Invalid top-k entries of absent/very small classes are masked before the mean.
+        # Prototype 0 uses reliable pixels. Prototype 1, when enabled, uses a disjoint set weighted
+        # towards boundaries/confusion regions to represent intra-class land-cover variation.
         classes = torch.arange(K, device=feat.device).view(1, K, 1)
         class_mask = pred.unsqueeze(1) == classes
         anchor_n = min(self.anchor_topk, HW)
-        anchor_score = conf.unsqueeze(1).expand(-1, K, -1).masked_fill(~class_mask, float('-inf'))
-        anchor_value, anchor_idx = anchor_score.topk(anchor_n, dim=2)
-        anchor_valid = torch.isfinite(anchor_value)
         expanded = tokens.unsqueeze(1).expand(-1, K, -1, -1)
-        anchor_tokens = expanded.gather(2, anchor_idx.unsqueeze(-1).expand(-1, -1, -1, C))
-        anchor_tokens = self.norm(anchor_tokens) + self.pos(
-            self._position(anchor_idx, H, W, anchor_tokens.dtype))
-        anchor_weight = anchor_valid.unsqueeze(-1).to(anchor_tokens.dtype)
-        prototypes = (anchor_tokens * anchor_weight).sum(2) / anchor_weight.sum(2).clamp_min_(1.)
-        prototypes = prototypes + scene.unsqueeze(1)
+
+        def pool_prototype(anchor_score):
+            value, idx = anchor_score.topk(anchor_n, dim=2)
+            valid = torch.isfinite(value)
+            anchor = expanded.gather(2, idx.unsqueeze(-1).expand(-1, -1, -1, C))
+            anchor = self.norm(anchor) + self.pos(self._position(idx, H, W, anchor.dtype))
+            weight = valid.unsqueeze(-1).to(anchor.dtype)
+            proto = (anchor * weight).sum(2) / weight.sum(2).clamp_min_(1.)
+            return proto, value, idx, valid
+
+        global_score = conf.unsqueeze(1).expand(-1, K, -1).masked_fill(~class_mask, float('-inf'))
+        global_proto, global_value, global_idx, global_valid = pool_prototype(global_score)
+        prototypes = [global_proto]
+        anchor_values = [global_value[global_valid]]
+        if self.num_prototypes == 2:
+            used = torch.zeros_like(class_mask)
+            used.scatter_(2, global_idx, global_valid)
+            boundary, confusion, _, _ = signals
+            hard_evidence = conf * (0.5 + boundary + confusion)
+            hard_score = hard_evidence.unsqueeze(1).expand(-1, K, -1)
+            hard_score = hard_score.masked_fill(~class_mask | used, float('-inf'))
+            hard_proto, hard_value, _, hard_valid = pool_prototype(hard_score)
+            hard_proto = torch.where(hard_valid.any(2, keepdim=True), hard_proto, global_proto)
+            prototypes.append(hard_proto)
+            anchor_values.append(hard_value[hard_valid])
+        prototypes = torch.stack(prototypes, dim=2) + scene.unsqueeze(1).unsqueeze(2)
 
         # Pack every active class into its own batch row.  This is the class-boundary state reset: no state
         # can flow from an arbitrary annotation ID to the next one.  Query packing is fully vectorized to
@@ -349,27 +479,37 @@ class SparseScanBlock(nn.Module):
         row_lookup[active_ids] = torch.arange(active_ids.numel(), device=feat.device)
         row_global = (torch.arange(Bsz, device=feat.device).unsqueeze(1) * K + q_pred).flatten()
         query_rows = row_lookup[row_global].view(Bsz, budget)
-        query_cols = pos_in_class + 1
-        lengths_t = counts.flatten()[active] + 1
+        query_cols = pos_in_class + self.num_prototypes
+        lengths_t = counts.flatten()[active] + self.num_prototypes
         max_len = int(lengths_t.max())
         packed = tokens.new_zeros((active_ids.numel(), max_len, C))
-        packed[:, 0] = prototypes.reshape(Bsz * K, C)[active]
+        packed[:, :self.num_prototypes] = prototypes.reshape(
+            Bsz * K, self.num_prototypes, C)[active]
         packed = packed.index_put(
             (query_rows.flatten(), query_cols.flatten()), q_tokens.reshape(Bsz * budget, C))
 
-        rev_in = self._reverse_queries(packed, lengths_t)
+        rev_in = self._reverse_queries(packed, lengths_t, self.num_prototypes)
         # One SSM launch for both directions; weights are shared exactly as in the original block.
         fwd, bwd = self.ssm(torch.cat([packed, rev_in], dim=0)).chunk(2, dim=0)
-        bwd = self._reverse_queries(bwd, lengths_t)
+        bwd = self._reverse_queries(bwd, lengths_t, self.num_prototypes)
         out = 0.5 * (fwd + bwd)
 
         query_out = out[query_rows.flatten(), query_cols.flatten()].view(Bsz, budget, C)
+        if self.gate_proj is not None:
+            boundary, confusion, _, _ = signals
+            gate_input = torch.stack((1. - q_conf, boundary.gather(1, q_idx),
+                                      confusion.gather(1, q_idx)), dim=-1)
+            gate = torch.sigmoid(self.gate_proj(gate_input.to(query_out.dtype)))
+            query_out = query_out * gate
+            self.last_gate = gate.mean().detach()
+        else:
+            self.last_gate = query_out.new_tensor(1.)
         full = tokens.new_zeros(Bsz, HW, C)
         full = full.scatter(1, q_idx.unsqueeze(-1).expand(-1, -1, C), query_out)
 
         self.last_conf = conf.mean().detach()
         self.last_query_conf = q_conf.mean().detach()
-        valid_anchor_conf = anchor_value[anchor_valid]
+        valid_anchor_conf = torch.cat(anchor_values)
         self.last_anchor_conf = valid_anchor_conf.mean().detach()
         self.last_selected_per_class = counts.detach()
         return full.transpose(1, 2).reshape(Bsz, C, H, W)
