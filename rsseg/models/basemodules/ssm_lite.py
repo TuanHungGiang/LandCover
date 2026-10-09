@@ -132,7 +132,7 @@ class SSDLite(nn.Module):
 
 class SparseScanBlock(nn.Module):
     ORDERS = ('raster', 'conf', 'hybrid', 'landcover')
-    SELECTORS = ('uncertainty', 'landcover', 'landcover_v2')
+    SELECTORS = ('uncertainty', 'landcover', 'landcover_v2', 'landcover_fast')
 
     def __init__(self, dim, order='conf', dirs=2, ratio=0.25, expand=1, d_state=8, n_heads=4,
                  dt_min=1e-3, dt_max=1e-1, chunk=64, backend='torch', use_checkpoint=False,
@@ -238,6 +238,20 @@ class SparseScanBlock(nn.Module):
             rank = rank * valid.to(rank.dtype)
         return rank
 
+    @staticmethod
+    def _minmax01(value, valid=None):
+        """Cheap per-image normalization used by the fast quota selector."""
+        if valid is None:
+            lo = value.amin(1, keepdim=True)
+            hi = value.amax(1, keepdim=True)
+            return (value - lo) / (hi - lo).clamp_min(1e-6)
+        masked_lo = value.masked_fill(~valid, float('inf')).amin(1, keepdim=True)
+        masked_hi = value.masked_fill(~valid, float('-inf')).amax(1, keepdim=True)
+        has_valid = valid.any(1, keepdim=True)
+        lo = torch.where(has_valid, masked_lo, torch.zeros_like(masked_lo))
+        hi = torch.where(has_valid, masked_hi, torch.ones_like(masked_hi))
+        return ((value - lo) / (hi - lo).clamp_min(1e-6)).clamp_(0., 1.) * valid.to(value.dtype)
+
     def _landcover_signals(self, probs, pred):
         """Return boundary, known-pair confusion, rarity and soft class mass."""
         _, K, H, W = probs.shape
@@ -329,19 +343,13 @@ class SparseScanBlock(nn.Module):
         self.last_quota_fraction = ((selected & forced).sum(1).float() / budget).mean().detach()
         return q_idx
 
-    def _landcover_queries_v2(self, probs, entropy, pred, budget, signals):
-        """Rank-normalized selector with explicit quotas and an exact unique-token budget."""
+    def _quota_landcover_queries(self, probs, pred, budget, signals, normalized_signals):
+        """Apply explicit signal/class quotas, then fill to an exact unique-token budget."""
         Bsz, K, H, W = probs.shape
         HW = H * W
         flat_probs = probs.flatten(2)
-        boundary, confusion, rarity, class_mass = signals
-        rank_signals = (
-            self._rank01(entropy),
-            self._rank01(boundary, boundary > 0),
-            self._rank01(confusion, confusion > 0),
-            self._rank01((HW / class_mass).pow(self.balance)).gather(1, pred),
-        )
-        score = sum(w * rank for w, rank in zip(self.selector_weights, rank_signals))
+        boundary, confusion, _, class_mass = signals
+        score = sum(w * signal for w, signal in zip(self.selector_weights, normalized_signals))
 
         raw_quota = [budget * q for q in self.selector_quotas]
         quota = [int(v) for v in raw_quota]
@@ -352,7 +360,7 @@ class SparseScanBlock(nn.Module):
 
         forced = torch.zeros(Bsz, HW, dtype=torch.bool, device=probs.device)
         signal_valid = (None, boundary > 0, confusion > 0)
-        for signal, valid, slots in zip(rank_signals[:3], signal_valid, quota[:3]):
+        for signal, valid, slots in zip(normalized_signals[:3], signal_valid, quota[:3]):
             if slots <= 0:
                 continue
             _, idx = signal.topk(min(slots, HW), dim=1)
@@ -392,6 +400,34 @@ class SparseScanBlock(nn.Module):
                                         confusion_mask.sum(1).clamp_min(1)).mean().detach()
         self.last_quota_fraction = ((selected & forced).sum(1).float() / budget).mean().detach()
         return q_idx
+
+    def _landcover_queries_v2(self, probs, entropy, pred, budget, signals):
+        """Percentile-rank selector retained as the V2 negative ablation."""
+        _, _, H, W = probs.shape
+        HW = H * W
+        boundary, confusion, _, class_mass = signals
+        normalized = (
+            self._rank01(entropy),
+            self._rank01(boundary, boundary > 0),
+            self._rank01(confusion, confusion > 0),
+            self._rank01((HW / class_mass).pow(self.balance)).gather(1, pred),
+        )
+        return self._quota_landcover_queries(probs, pred, budget, signals, normalized)
+
+    def _landcover_queries_fast(self, probs, entropy, pred, budget, signals):
+        """Linear-time normalized quota selector; no full token sorting beyond required top-k calls."""
+        _, _, H, W = probs.shape
+        HW = H * W
+        boundary, confusion, _, class_mass = signals
+        class_priority = self._minmax01((HW / class_mass).pow(self.balance)).gather(1, pred)
+        normalized = (
+            self._minmax01(entropy),
+            self._minmax01(boundary, boundary > 0),
+            self._minmax01(confusion, confusion > 0),
+            class_priority,
+        )
+        return self._quota_landcover_queries(probs, pred, budget, signals, normalized)
+
     def _forward_landcover(self, feat, logits, tokens, probs, entropy, conf, pred):
         """Anchor-to-uncertain scan with independent state for every image/class pair.
 
@@ -411,7 +447,9 @@ class SparseScanBlock(nn.Module):
         # V1 remains available for exact historical ablations. V2 changes selection, prototypes and
         # residual gating while preserving the exact same number of unique scanned image tokens.
         signals = self._landcover_signals(probs, pred)
-        if self.selector == 'landcover_v2':
+        if self.selector == 'landcover_fast':
+            q_idx = self._landcover_queries_fast(probs, entropy, pred, budget, signals)
+        elif self.selector == 'landcover_v2':
             q_idx = self._landcover_queries_v2(probs, entropy, pred, budget, signals)
         elif self.selector == 'landcover':
             q_idx = self._landcover_queries(probs, entropy, pred, budget)
