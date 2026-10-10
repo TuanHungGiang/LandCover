@@ -22,6 +22,9 @@ SparseScanBlock  what is scanned and in which order, for land-cover maps:
                      disagreement and known LoveDA confusion pairs, while reserving a small conditional
                      quota for classes that are actually present.  This improves error coverage without
                      increasing the number of unique scanned pixels.
+CoverageScanBlock condenses every 2x2 cell into one spatial context token, scans exactly 25% as many
+                  tokens without dropping any region, then expands context back to the dense residual.
+                  Soft full-image prototypes condition tokens without hard class routing.
 """
 import math
 from functools import partial
@@ -610,3 +613,133 @@ class SparseScanBlock(nn.Module):
         full = full.scatter(1, idx.unsqueeze(-1).expand(-1, -1, C), delta)                # zero at bypassed pixels
         self.last_conf = conf.mean().detach()
         return full.transpose(1, 2).reshape(Bsz, C, H, W) * routing_scale
+
+
+class CoverageScanBlock(nn.Module):
+    """Quarter-token spatial Mamba whose context path still sees every input pixel.
+
+    A learned 2x2 condensation maps four spatial samples to one context token, so the SSM sequence
+    is exactly 25% of the original spatial length for even feature maps. Unlike sparse top-k routing,
+    every 2x2 region contributes and the untouched dense feature remains on GEE_Head's outer residual
+    path. Class probabilities are used only as soft prototype weights; they never decide sequence
+    membership or reset state.
+    """
+
+    def __init__(self, dim, ratio=0.25, expand=1, d_state=8, n_heads=4,
+                 dt_min=1e-3, dt_max=1e-1, chunk=64, backend='torch', use_checkpoint=False,
+                 pos_bands=4, soft_prototypes=True, warmup_epochs=0, ramp_epochs=0):
+        super().__init__()
+        if not math.isclose(float(ratio), 0.25, rel_tol=0., abs_tol=1e-8):
+            raise ValueError('CoverageScanBlock uses one token per 2x2 cell, so ratio must be 0.25')
+        if pos_bands <= 0:
+            raise ValueError('pos_bands must be positive')
+        self.ratio = float(ratio)
+        self.pos_bands = int(pos_bands)
+        self.soft_prototypes = bool(soft_prototypes)
+        self.warmup_epochs, self.ramp_epochs, self.current_epoch = int(warmup_epochs), int(ramp_epochs), 0
+
+        # Inject local texture before compression. Zero initialization starts from unmodified features.
+        self.local = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
+        nn.init.zeros_(self.local.weight)
+
+        # PixelUnshuffle stores four samples per input channel contiguously, so grouped 1x1 projections
+        # learn four-to-one condensation and one-to-four reconstruction at negligible parameter cost.
+        self.condense = nn.Conv2d(4 * dim, dim, 1, groups=dim, bias=False)
+        self.expand_context = nn.Conv2d(dim, 4 * dim, 1, groups=dim, bias=False)
+        with torch.no_grad():
+            self.condense.weight.fill_(0.25)       # exact 2x2 mean at initialization
+            self.expand_context.weight.fill_(1.)  # broadcast context to all four pixels initially
+
+        # Max-minus-mean retains a cheap high-frequency/small-object statistic through condensation.
+        self.detail_scale = nn.Parameter(torch.full((1, dim, 1, 1), 0.1))
+        self.norm = nn.LayerNorm(dim)
+        self.pos = nn.Linear(4 * self.pos_bands, dim)
+        self.semantic_proj = nn.Linear(dim, dim, bias=False) if self.soft_prototypes else None
+        if self.semantic_proj is not None:
+            nn.init.zeros_(self.semantic_proj.weight)
+
+        self.ssm = SSDLite(dim, expand, d_state, n_heads, dt_min, dt_max,
+                           chunk, backend, use_checkpoint)
+        self.last_conf = None
+        self.last_token_ratio = None
+        self.last_context_tokens = None
+        self.last_proto_mass = None
+
+    def set_epoch(self, epoch):
+        self.current_epoch = int(epoch)
+
+    def _routing_scale(self):
+        if not self.training:
+            return 1.0
+        if self.current_epoch < self.warmup_epochs:
+            return 0.0
+        if self.ramp_epochs <= 0:
+            return 1.0
+        return min(1.0, (self.current_epoch - self.warmup_epochs + 1) / self.ramp_epochs)
+
+    def _position(self, H, W, dtype, device):
+        idx = torch.arange(H * W, device=device)
+        ys, xs = idx // W, idx % W
+        yn, xn = ys.float() / max(H - 1, 1), xs.float() / max(W - 1, 1)
+        bands = torch.arange(self.pos_bands, device=device, dtype=xn.dtype)
+        freq = (2. ** bands) * math.pi
+        x, y = xn.unsqueeze(-1) * freq, yn.unsqueeze(-1) * freq
+        coords = torch.cat([x.sin(), x.cos(), y.sin(), y.cos()], dim=-1)
+        return self.pos(coords.to(dtype))
+
+    @staticmethod
+    def _serpentine_order(H, W, device):
+        grid = torch.arange(H * W, device=device).view(H, W)
+        if H > 1:
+            grid = grid.clone()
+            grid[1::2] = grid[1::2].flip(1)
+        return grid.flatten()
+
+    def forward(self, feat, logits):
+        scale = self._routing_scale()
+        if scale == 0.0:
+            self.last_conf = logits.new_tensor(0.)
+            return torch.zeros_like(feat)
+
+        Bsz, C, H, W = feat.shape
+        if H % 2 or W % 2:
+            raise ValueError(f'CoverageScanBlock requires even H/W for exact 25%, got {H}x{W}')
+        h, w = H // 2, W // 2
+
+        local = feat + self.local(feat)
+        packed = F.pixel_unshuffle(local, 2)                         # lossless spatial rearrangement
+        context = self.condense(packed)
+        mean = F.avg_pool2d(local, 2, 2)
+        peak = F.max_pool2d(local, 2, 2)
+        context = context + self.detail_scale * (peak - mean)
+        tokens = self.norm(context.flatten(2).transpose(1, 2))       # B, HW/4, C
+
+        with torch.no_grad():
+            probs = F.softmax(logits.detach().float(), dim=1)
+            entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(1) / math.log(logits.shape[1])
+            self.last_conf = (1. - entropy.mean()).detach()
+
+        if self.semantic_proj is not None:
+            full_tokens = self.norm(local.flatten(2).transpose(1, 2))
+            p_flat = probs.flatten(2).to(full_tokens.dtype)          # B, K, HW
+            mass = p_flat.sum(2).clamp_min(1e-6)
+            prototypes = torch.einsum('bkn,bnc->bkc', p_flat, full_tokens) / mass.unsqueeze(-1)
+            p_low = F.avg_pool2d(probs, 2, 2).flatten(2).transpose(1, 2).to(tokens.dtype)
+            semantic = torch.einsum('bnk,bkc->bnc', p_low, prototypes)
+            tokens = tokens + self.semantic_proj(semantic)
+            self.last_proto_mass = (mass / (H * W)).mean().detach()
+
+        tokens = tokens + self._position(h, w, tokens.dtype, tokens.device).unsqueeze(0)
+        order = self._serpentine_order(h, w, tokens.device)
+        inverse = order.argsort()
+        sequence = tokens.index_select(1, order)
+
+        # One launch and shared weights for both directions. Spatial order removes class-order leakage.
+        forward, backward = self.ssm(torch.cat([sequence, sequence.flip(1)], dim=0)).chunk(2, dim=0)
+        sequence_out = 0.5 * (forward + backward.flip(1))
+        context_out = sequence_out.index_select(1, inverse).transpose(1, 2).reshape(Bsz, C, h, w)
+        full_context = F.pixel_shuffle(self.expand_context(context_out), 2)
+
+        self.last_context_tokens = h * w
+        self.last_token_ratio = feat.new_tensor((h * w) / (H * W))
+        return full_context * scale
