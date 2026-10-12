@@ -25,9 +25,10 @@ combination, and local search. The land-cover version adds:
 3. **Leakage-safe cross-validated evaluation:** LoveDA Train is deterministically partitioned within
    each Urban/Rural domain into three disjoint folds. Every policy is trained three times, each time
    holding out a different fold. Selection uses `fold_mean - 0.5 * fold_std`, so an unstable one-fold
-   winner is penalized. Twelve-epoch screening precedes 24-epoch confirmation. Official LoveDA Val is
-   never loaded by the search. Only the selected policy is retrained on full Train for 96 epochs and
-   then evaluated on official Val.
+   winner is penalized. Fold ranking uses the final scheduled validation, not the best epoch on that
+   same fold. Twelve-epoch screening precedes 24-epoch confirmation. Official LoveDA Val is never
+   loaded by the search. Only the selected policy is retrained on full Train for 96 epochs and then
+   evaluated on official Val.
 4. **C2 warm start:** the known policy is one population member, preventing a small GPU budget from
    spending every trial rediscovering the baseline.
 

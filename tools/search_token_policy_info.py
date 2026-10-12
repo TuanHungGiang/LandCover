@@ -180,8 +180,12 @@ def parse_metrics(path):
     rows = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
     if not rows:
         raise RuntimeError(f"No validation metrics in {path}")
+    # Fidelity has a fixed epoch budget. Rank on the final scheduled validation rather than choosing
+    # the best epoch on the same fold, which would turn the CV holdout into an early-stopping tuner.
+    selected = rows[-1]
     best = max(rows, key=lambda row: row["val_miou"])
-    return float(best["val_miou"]), float(np.mean([best["iou"][i] for i in HARD_CLASSES])), best
+    return (float(selected["val_miou"]),
+            float(np.mean([selected["iou"][i] for i in HARD_CLASSES])), selected, best)
 
 
 def measured_block_latency(policy, device, iters=20):
@@ -313,10 +317,11 @@ def run_trial(policy, fidelity, args, gpu, cache, lock, fold_index=0):
             proc = subprocess.run(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
         if proc.returncode:
             raise RuntimeError(f"Trial {key} failed; see {exp / 'train.log'}")
-        miou, hard, best = parse_metrics(exp / "val_metrics.jsonl")
+        miou, hard, selected, peak = parse_metrics(exp / "val_metrics.jsonl")
         latency = measured_block_latency(policy, gpu, args.latency_iters)
         result = dict(miou=miou, hard_iou=hard, latency_ms=latency,
-                      best_epoch=best["epoch"], train_minutes=(time.time() - start) / 60,
+                      eval_epoch=selected["epoch"], peak_miou=float(peak["val_miou"]),
+                      peak_epoch=peak["epoch"], train_minutes=(time.time() - start) / 60,
                       exp=str(exp))
     result.update(policy=policy, fidelity=fidelity, fold_index=int(fold_index), key=key)
     with lock:
