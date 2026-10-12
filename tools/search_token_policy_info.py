@@ -5,12 +5,13 @@ score/top-k construction and scans exactly N/4 context tokens; no population is 
 image.  INFO (weighted mean of vectors) is adapted in three ways for this problem:
 
 1. conservation repair: ratio is not a search variable and is forced to 0.25 in every trial;
-2. a Pareto archive keeps accuracy, difficult-class IoU and measured block latency;
-3. cheap screening runs are followed by a higher-fidelity confirmation of the Pareto leaders.
+2. three-fold CV on LoveDA Train selects by fold mean minus a variability penalty;
+3. a Pareto archive keeps robust accuracy, difficult-class IoU and measured block latency;
+4. cheap screening runs are followed by a higher-fidelity confirmation of the Pareto leaders.
 
 Typical two-GPU Kaggle search (restartable):
 
-    python tools/search_token_policy_info.py --gpus 0 1 --population 6 --generations 2
+    python tools/search_token_policy_info.py --gpus 0 1 --population 4 --generations 1 --confirm_top 2
 
 Quick plumbing check without training:
 
@@ -120,9 +121,11 @@ def policy_overrides(policy):
 
 def dominates(a, b):
     """Maximize both accuracies and minimize latency."""
-    no_worse = (a["miou"] >= b["miou"] and a["hard_iou"] >= b["hard_iou"] and
+    am, bm = a.get("selection_miou", a["miou"]), b.get("selection_miou", b["miou"])
+    ah, bh = a.get("selection_hard_iou", a["hard_iou"]), b.get("selection_hard_iou", b["hard_iou"])
+    no_worse = (am >= bm and ah >= bh and
                 a["latency_ms"] <= b["latency_ms"])
-    strict = (a["miou"] > b["miou"] or a["hard_iou"] > b["hard_iou"] or
+    strict = (am > bm or ah > bh or
               a["latency_ms"] < b["latency_ms"])
     return no_worse and strict
 
@@ -134,7 +137,9 @@ def pareto_front(rows):
 
 def utilities(rows):
     """Rank scalar used only by the INFO update; final selection remains Pareto-based."""
-    matrix = np.asarray([[r["miou"], r["hard_iou"], -r["latency_ms"]] for r in rows])
+    matrix = np.asarray([[r.get("selection_miou", r["miou"]),
+                          r.get("selection_hard_iou", r["hard_iou"]),
+                          -r["latency_ms"]] for r in rows])
     lo, hi = matrix.min(0), matrix.max(0)
     norm = (matrix - lo) / np.maximum(hi - lo, 1e-12)
     return norm @ np.asarray([0.65, 0.20, 0.15])
@@ -230,19 +235,19 @@ def validate_internal_holdout(config_path):
 
     cfg = Config.fromfile(str(config_path)).dataset_config
     train, val = cfg.train_mode, cfg.val_mode
-    train_fraction, train_seed = train.get("holdout_fraction"), train.get("holdout_seed")
+    train_folds, train_seed = train.get("num_folds"), train.get("holdout_seed")
     problems = []
     if train.get("source_split") != "Train" or train.get("split_role") != "fit":
         problems.append("train_mode must use source_split=Train, split_role=fit")
     if val.get("source_split") != "Train" or val.get("split_role") != "holdout":
         problems.append("val_mode must use source_split=Train, split_role=holdout")
-    if train_fraction is None or float(val.get("holdout_fraction", -1)) != float(train_fraction):
-        problems.append("train/val holdout_fraction differs")
+    if train_folds is None or int(train_folds) < 2 or int(val.get("num_folds", -1)) != int(train_folds):
+        problems.append("train/val num_folds must match and be >= 2")
     if train_seed is None or int(val.get("holdout_seed", -1)) != int(train_seed):
         problems.append("train/val holdout_seed differs")
     if problems:
         raise ValueError("Policy-search leakage guard rejected the config: " + "; ".join(problems))
-    return dict(source_split="Train", holdout_fraction=float(train_fraction), holdout_seed=int(train_seed))
+    return dict(source_split="Train", num_folds=int(train_folds), holdout_seed=int(train_seed))
 
 
 def build_split_manifest(config_path):
@@ -251,22 +256,34 @@ def build_split_manifest(config_path):
     from rsseg.datasets.loveda_dataset import LoveDA
 
     cfg = Config.fromfile(str(config_path)).dataset_config
-    fit = LoveDA(cfg.data_root, "train", **dict(cfg.train_mode))
-    holdout = LoveDA(cfg.data_root, "val", **dict(cfg.val_mode))
     domains = tuple(cfg.train_mode.get("domains", ("Urban", "Rural")))
     full = LoveDA(cfg.data_root, "train", source_split="Train", domains=domains)
     encode = lambda paths: sorted(f"{domain}/{image_id}" for image_id, domain in paths)
-    fit_ids, holdout_ids, full_ids = map(set, (encode(fit.file_paths), encode(holdout.file_paths), encode(full.file_paths)))
-    if fit_ids & holdout_ids or fit_ids | holdout_ids != full_ids:
-        raise RuntimeError("Internal fit/holdout split is not a disjoint, complete partition of LoveDA Train")
-    payload = dict(fit=sorted(fit_ids), holdout=sorted(holdout_ids))
+    full_ids = set(encode(full.file_paths))
+    payload, all_holdouts = dict(folds=[]), set()
+    for fold_index in range(int(cfg.train_mode.num_folds)):
+        train_cfg, val_cfg = dict(cfg.train_mode), dict(cfg.val_mode)
+        train_cfg["fold_index"], val_cfg["fold_index"] = fold_index, fold_index
+        fit = LoveDA(cfg.data_root, "train", **train_cfg)
+        holdout = LoveDA(cfg.data_root, "val", **val_cfg)
+        fit_ids, holdout_ids = set(encode(fit.file_paths)), set(encode(holdout.file_paths))
+        if fit_ids & holdout_ids or fit_ids | holdout_ids != full_ids:
+            raise RuntimeError(f"Fold {fold_index} is not a disjoint, complete partition of LoveDA Train")
+        if all_holdouts & holdout_ids:
+            raise RuntimeError(f"Fold {fold_index} holdout overlaps an earlier fold")
+        all_holdouts |= holdout_ids
+        payload["folds"].append(dict(index=fold_index, fit=sorted(fit_ids), holdout=sorted(holdout_ids)))
+    if all_holdouts != full_ids:
+        raise RuntimeError("Cross-validation holdouts do not cover LoveDA Train exactly once")
     payload["sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    payload["counts"] = dict(fit=len(fit_ids), holdout=len(holdout_ids), full=len(full_ids))
+    payload["counts"] = dict(full=len(full_ids), folds=[dict(
+        fit=len(fold["fit"]), holdout=len(fold["holdout"])) for fold in payload["folds"]])
     return payload
 
 
-def run_trial(policy, fidelity, args, gpu, cache, lock):
-    key = policy_key(policy, fidelity, args.study_id)
+def run_trial(policy, fidelity, args, gpu, cache, lock, fold_index=0):
+    fold_fidelity = {**fidelity, "fold_index": int(fold_index)}
+    key = policy_key(policy, fold_fidelity, args.study_id)
     with lock:
         if key in cache:
             return cache[key]
@@ -282,6 +299,8 @@ def run_trial(policy, fidelity, args, gpu, cache, lock):
                      f"limit_val_batches={fidelity['val_fraction']}",
                      f"model_config.seghead.scan_cfg.warmup_epochs={fidelity['warmup']}",
                      f"model_config.seghead.scan_cfg.ramp_epochs={fidelity['ramp']}",
+                     f"dataset_config.train_mode.fold_index={fold_index}",
+                     f"dataset_config.val_mode.fold_index={fold_index}",
                      f"gpus=[{gpu}]", f"dataset_config.train_mode.loader.batch_size={args.batch}",
                      f"dataset_config.val_mode.loader.batch_size={args.val_batch}",
                      f"accumulate_grad_batches={args.accumulate}",
@@ -299,7 +318,7 @@ def run_trial(policy, fidelity, args, gpu, cache, lock):
         result = dict(miou=miou, hard_iou=hard, latency_ms=latency,
                       best_epoch=best["epoch"], train_minutes=(time.time() - start) / 60,
                       exp=str(exp))
-    result.update(policy=policy, fidelity=fidelity, key=key)
+    result.update(policy=policy, fidelity=fidelity, fold_index=int(fold_index), key=key)
     with lock:
         cache[key] = result
         save_json(Path(args.out) / "cache.json", cache)
@@ -314,21 +333,41 @@ def save_json(path, value):
 
 
 def evaluate_many(policies, fidelity, args, cache, lock):
-    results = [None] * len(policies)
+    fold_results = [[] for _ in policies]
+    tasks = [(i, fold, policy) for i, policy in enumerate(policies) for fold in range(args.folds)]
     # Submit one wave at a time.  A generic thread pool can otherwise start the next GPU-0
     # job when GPU 1 happens to finish first, colliding with the still-running GPU-0 job.
     with ThreadPoolExecutor(max_workers=len(args.gpus)) as executor:
-        for begin in range(0, len(policies), len(args.gpus)):
+        for begin in range(0, len(tasks), len(args.gpus)):
             future_map = {}
-            for offset, policy in enumerate(policies[begin:begin + len(args.gpus)]):
-                i = begin + offset
-                future_map[executor.submit(run_trial, policy, fidelity, args, args.gpus[offset], cache, lock)] = i
+            for offset, (i, fold, policy) in enumerate(tasks[begin:begin + len(args.gpus)]):
+                future_map[executor.submit(
+                    run_trial, policy, fidelity, args, args.gpus[offset], cache, lock, fold)] = (i, fold)
             for future in as_completed(future_map):
-                i = future_map[future]
-                results[i] = future.result()
-                row = results[i]
-                print(f"trial {row['key']}: mIoU={row['miou']*100:.2f} hard={row['hard_iou']*100:.2f} "
+                i, fold = future_map[future]
+                row = future.result()
+                fold_results[i].append(row)
+                print(f"trial {row['key']} fold={fold}: mIoU={row['miou']*100:.2f} "
+                      f"hard={row['hard_iou']*100:.2f} "
                       f"latency={row['latency_ms']:.2f} ms", flush=True)
+    results = []
+    for policy, folds in zip(policies, fold_results):
+        folds.sort(key=lambda row: row["fold_index"])
+        miou = np.asarray([row["miou"] for row in folds])
+        hard = np.asarray([row["hard_iou"] for row in folds])
+        latency = np.asarray([row["latency_ms"] for row in folds])
+        aggregate = dict(
+            policy=policy, fidelity=fidelity,
+            key=policy_key(policy, {**fidelity, "aggregate_folds": args.folds}, args.study_id),
+            miou=float(miou.mean()), miou_std=float(miou.std()),
+            hard_iou=float(hard.mean()), hard_iou_std=float(hard.std()),
+            selection_miou=float(miou.mean() - args.cv_penalty * miou.std()),
+            selection_hard_iou=float(hard.mean() - args.cv_penalty * hard.std()),
+            latency_ms=float(latency.mean()), folds=folds,
+        )
+        results.append(aggregate)
+        print(f"CV {aggregate['key']}: mIoU={aggregate['miou']*100:.2f}+-{aggregate['miou_std']*100:.2f} "
+              f"robust={aggregate['selection_miou']*100:.2f}", flush=True)
     return results
 
 
@@ -355,6 +394,9 @@ def main():
     parser.add_argument("--val_fraction", type=float, default=0.50)
     parser.add_argument("--confirm_top", type=int, default=3)
     parser.add_argument("--latency_iters", type=int, default=20)
+    parser.add_argument("--folds", type=int, default=3, help="simulation only; real search reads num_folds from config")
+    parser.add_argument("--cv-penalty", type=float, default=0.5,
+                        help="select by fold mean minus this many population standard deviations")
     parser.add_argument("--batch", type=int, default=None, help="per-GPU train batch (default: m11=4, m15=2)")
     parser.add_argument("--val-batch", type=int, default=2)
     parser.add_argument("--accumulate", type=int, default=None, help="default: m11=2, m15=4")
@@ -364,13 +406,17 @@ def main():
         parser.error("--population must be >= 4 (INFO needs three peers per candidate)")
     if not (0 < args.train_fraction <= 1 and 0 < args.val_fraction <= 1):
         parser.error("fractions must be in (0, 1]")
+    if args.folds < 2 or args.cv_penalty < 0:
+        parser.error("--folds must be >= 2 and --cv-penalty must be non-negative")
     is_m15 = "m15" in Path(args.config).stem
     args.batch = args.batch or (2 if is_m15 else 4)
     args.accumulate = args.accumulate or (4 if is_m15 else 2)
 
     os.chdir(ROOT)
     Path(args.out).mkdir(parents=True, exist_ok=True)
-    split_meta = dict(simulated=True) if args.simulate else validate_internal_holdout(args.config)
+    split_meta = (dict(simulated=True, num_folds=args.folds) if args.simulate
+                  else validate_internal_holdout(args.config))
+    args.folds = int(split_meta["num_folds"])
     if args.simulate:
         manifest_digest = "simulated"
     else:
@@ -406,7 +452,7 @@ def main():
         population = [pool_z[i] for i in rank]
         rows = [pool_rows[i] for i in rank]
         print(f"generation {generation + 1}: front={len(pareto_front(rows))} "
-              f"best-screen={max(r['miou'] for r in rows)*100:.2f}", flush=True)
+              f"best-robust={max(r['selection_miou'] for r in rows)*100:.2f}", flush=True)
 
     front = pareto_front(rows)
     front_score = utilities(front)
@@ -417,8 +463,10 @@ def main():
     final_overrides = policy_overrides(best["policy"])
     model_tag = "m15" if "m15" in Path(args.final_config).stem else "m11"
     final_exp = f"work_dirs/{model_tag}_mamba_info_final"
-    artifact = dict(exact_ratio=EXACT_RATIO, algorithm="conservation-aware multi-fidelity Pareto INFO",
+    artifact = dict(exact_ratio=EXACT_RATIO,
+                    algorithm="cross-validated conservation-aware multi-fidelity Pareto INFO",
                     search_split=split_meta, search_config=args.config, final_config=args.final_config,
+                    cv_penalty=args.cv_penalty,
                     selected=best, pareto_front=confirmed_front, final_overrides=final_overrides,
                     final_command=[sys.executable, "train.py", "-c", args.final_config, "--set",
                                    f"exp_name={final_exp}", *final_overrides])

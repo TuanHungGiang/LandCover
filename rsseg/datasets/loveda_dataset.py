@@ -5,7 +5,8 @@ import hashlib
 import numpy as np
 class LoveDA(BaseDataset):
     def __init__(self,data_root='data/vaihingen', mode='train', transform=None,img_dir='images_png', mask_dir='masks_png', img_suffix='.png', mask_suffix='.png', domains=('Urban', 'Rural'),
-                 source_split=None, split_role='all', holdout_fraction=0.0, holdout_seed=2026, **kwargs):
+                 source_split=None, split_role='all', holdout_fraction=0.0, holdout_seed=2026,
+                 num_folds=1, fold_index=0, **kwargs):
         super(LoveDA, self).__init__(transform)
 
         # domains: which LoveDA scenes to load, e.g. ['Urban'] for a cross-domain (Urban -> Rural) experiment
@@ -24,13 +25,19 @@ class LoveDA(BaseDataset):
             raise ValueError(f'Unknown LoveDA source_split={source_split!r}')
         if split_role not in ('all', 'fit', 'holdout'):
             raise ValueError(f'split_role must be all|fit|holdout, got {split_role!r}')
-        if split_role != 'all' and (source_split != 'Train' or not 0. < holdout_fraction < 1.):
-            raise ValueError('fit/holdout partitioning requires source_split=Train and holdout_fraction in (0,1)')
+        if split_role != 'all' and source_split != 'Train':
+            raise ValueError('fit/holdout partitioning requires source_split=Train')
+        if split_role != 'all' and num_folds < 2 and not 0. < holdout_fraction < 1.:
+            raise ValueError('single-holdout partitioning requires holdout_fraction in (0,1)')
+        if num_folds < 1 or not 0 <= fold_index < num_folds:
+            raise ValueError(f'invalid fold_index={fold_index} for num_folds={num_folds}')
         self.data_root = os.path.join(data_root, source_split)
         self.source_split = source_split
         self.split_role = split_role
         self.holdout_fraction = float(holdout_fraction)
         self.holdout_seed = int(holdout_seed)
+        self.num_folds = int(num_folds)
+        self.fold_index = int(fold_index)
 
         self.file_paths = self.get_path(self.data_root,img_dir,mask_dir)
 
@@ -49,15 +56,19 @@ class LoveDA(BaseDataset):
         self.num_classes = 7
 
     @staticmethod
-    def partition_ids(domain_ids, domain, split_role, holdout_fraction, holdout_seed):
+    def partition_ids(domain_ids, domain, split_role, holdout_fraction, holdout_seed,
+                      num_folds=1, fold_index=0):
         """Domain-stratified deterministic partition used by policy search."""
         domain_ids = sorted(domain_ids)
         if split_role == 'all':
             return domain_ids
         scored = sorted(domain_ids, key=lambda image_id: hashlib.sha256(
             f'{holdout_seed}:{domain}:{image_id}'.encode()).digest())
-        n_holdout = max(1, min(len(scored) - 1, int(round(holdout_fraction * len(scored)))))
-        held_out = set(scored[:n_holdout])
+        if num_folds >= 2:
+            held_out = {image_id for rank, image_id in enumerate(scored) if rank % num_folds == fold_index}
+        else:
+            n_holdout = max(1, min(len(scored) - 1, int(round(holdout_fraction * len(scored)))))
+            held_out = set(scored[:n_holdout])
         return [image_id for image_id in domain_ids
                 if (image_id in held_out) == (split_role == 'holdout')]
 
@@ -70,7 +81,8 @@ class LoveDA(BaseDataset):
                 assert len(img_filename_list) == len(mask_filename_list)
             domain_ids = self.partition_ids(
                 [str(name.rsplit('.', 1)[0]) for name in img_filename_list], domain,
-                self.split_role, self.holdout_fraction, self.holdout_seed)
+                self.split_role, self.holdout_fraction, self.holdout_seed,
+                self.num_folds, self.fold_index)
             img_ids += [(image_id, domain) for image_id in domain_ids]
         return img_ids
 

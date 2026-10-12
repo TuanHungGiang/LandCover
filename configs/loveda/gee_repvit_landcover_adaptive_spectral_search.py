@@ -12,15 +12,17 @@ dataset_config = dict(
     train_mode=dict(
         source_split='Train',
         split_role='fit',
-        holdout_fraction=0.20,
         holdout_seed=2026,
+        num_folds=3,
+        fold_index=0,
         loader=dict(batch_size=4, num_workers=2),
     ),
     val_mode=dict(
         source_split='Train',
         split_role='holdout',
-        holdout_fraction=0.20,
         holdout_seed=2026,
+        num_folds=3,
+        fold_index=0,
         loader=dict(batch_size=2, num_workers=2),
     ),
 )
