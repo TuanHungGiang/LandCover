@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from timm.models.layers import trunc_normal_
 
 from rsseg.models.segheads.logcanplus_head import RVSA_MRAM, SpatialGatherModule, conv_3x3, upsample_add
-from rsseg.models.basemodules.ssm_lite import CoverageScanBlock, SparseScanBlock
+from rsseg.models.basemodules.ssm_lite import AdaptiveCoverageScanBlock, CoverageScanBlock, SparseScanBlock
 
 
 class SceneExplore(nn.Module):
@@ -110,6 +110,11 @@ class GEE_Head(nn.Module):
                            dt_min=1e-3, dt_max=1e-1, chunk=64)
                 cfg.update(requested)
                 block_cls = CoverageScanBlock
+            elif block_type == 'adaptive_coverage':
+                cfg = dict(ratio=0.25, expand=1, d_state=8, n_heads=4,
+                           dt_min=1e-3, dt_max=1e-1, chunk=64)
+                cfg.update(requested)
+                block_cls = AdaptiveCoverageScanBlock
             elif block_type == 'sparse':
                 cfg = dict(order='conf', dirs=2, ratio=0.25, expand=1, d_state=8, n_heads=4,
                            dt_min=1e-3, dt_max=1e-1, chunk=64)

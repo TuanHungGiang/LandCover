@@ -25,6 +25,10 @@ SparseScanBlock  what is scanned and in which order, for land-cover maps:
 CoverageScanBlock condenses every 2x2 cell into one spatial context token, scans exactly 25% as many
                   tokens without dropping any region, then expands context back to the dense residual.
                   Soft full-image prototypes condition tokens without hard class routing.
+AdaptiveCoverageScanBlock keeps the same exact sequence length, but trades resolution between regions:
+                  every selected homogeneous 4x4 merge (4 -> 1 tokens) funds one complex 2x2 split
+                  (1 -> 4 tokens).  A sparse graph diffusion approximates the Fiedler field and supplies
+                  a content-aware spectral order without constructing a dense N x N affinity matrix.
 """
 import math
 from functools import partial
@@ -743,3 +747,264 @@ class CoverageScanBlock(nn.Module):
         self.last_context_tokens = h * w
         self.last_token_ratio = feat.new_tensor((h * w) / (H * W))
         return full_context * scale
+
+
+class AdaptiveCoverageScanBlock(CoverageScanBlock):
+    """Exact-budget mixed-resolution context followed by an area-aware spectral scan.
+
+    The uniform quarter grid contains ``N = H*W/4`` tokens.  For every selected homogeneous group of
+    four neighbouring quarter-grid tokens we create one 4x4 token (saving three slots), and split one
+    complex 2x2 cell into four 1x1 tokens (spending the same three slots).  Therefore the SSM always
+    receives exactly N tokens and every source pixel belongs to exactly one adaptive region.
+
+    The scan key is an approximate non-trivial eigenfunction of a feature-weighted 4-neighbour graph.
+    It is computed by deflated normalized-adjacency iterations in O(HW), detached because sorting is a
+    discrete routing decision.  Region keys are pixel-mass averages of this field; variable-size tokens
+    consequently share one common, measure-aware spectral coordinate.
+    """
+
+    def __init__(self, dim, ratio=0.25, expand=1, d_state=8, n_heads=4,
+                 dt_min=1e-3, dt_max=1e-1, chunk=64, backend='torch', use_checkpoint=False,
+                 pos_bands=4, soft_prototypes=True, warmup_epochs=0, ramp_epochs=0,
+                 adapt_fraction=0.25, boundary_weight=0.75, entropy_weight=0.5,
+                 rarity_weight=0.25, spectral_iters=6, spectral_temperature=0.5,
+                 spectral_self_loop=1.0):
+        super().__init__(dim, ratio, expand, d_state, n_heads, dt_min, dt_max, chunk, backend,
+                         use_checkpoint, pos_bands, soft_prototypes, warmup_epochs, ramp_epochs)
+        if not 0. <= adapt_fraction <= 0.5:
+            raise ValueError('adapt_fraction must be in [0, 0.5]')
+        if min(boundary_weight, entropy_weight, rarity_weight) < 0.:
+            raise ValueError('adaptive routing weights must be non-negative')
+        if spectral_iters <= 0 or spectral_temperature <= 0. or spectral_self_loop <= 0.:
+            raise ValueError('invalid spectral scan parameters')
+        self.adapt_fraction = float(adapt_fraction)
+        self.boundary_weight = float(boundary_weight)
+        self.entropy_weight = float(entropy_weight)
+        self.rarity_weight = float(rarity_weight)
+        self.spectral_iters = int(spectral_iters)
+        self.spectral_temperature = float(spectral_temperature)
+        self.spectral_self_loop = float(spectral_self_loop)
+        self.area_proj = nn.Linear(1, dim, bias=False)
+        nn.init.zeros_(self.area_proj.weight)
+        self.last_adaptive_pairs = None
+        self.last_region_mass = None
+        self.last_partition_complete = None
+
+    @staticmethod
+    def _minmax(x):
+        flat = x.flatten(1)
+        lo = flat.amin(1).view(-1, 1, 1, 1)
+        hi = flat.amax(1).view(-1, 1, 1, 1)
+        return (x - lo) / (hi - lo).clamp_min(1e-6)
+
+    @staticmethod
+    def _base_pixels(index, width, full_width):
+        """Quarter-grid indices -> the four corresponding dense pixel indices."""
+        y, x = index // width, index % width
+        y, x = 2 * y, 2 * x
+        return torch.stack((y * full_width + x, y * full_width + x + 1,
+                            (y + 1) * full_width + x, (y + 1) * full_width + x + 1), dim=-1)
+
+    @staticmethod
+    def _group_cells(group_index, group_width, base_width):
+        """4x4-region indices -> their four quarter-grid cell indices."""
+        y, x = group_index // group_width, group_index % group_width
+        y, x = 2 * y, 2 * x
+        return torch.stack((y * base_width + x, y * base_width + x + 1,
+                            (y + 1) * base_width + x, (y + 1) * base_width + x + 1), dim=-1)
+
+    def _complexity(self, local, probs, semantic_scale):
+        """Land-cover complexity on the uniform 2x2 grid; routing only, hence detached."""
+        x = local.detach().float()
+        mean = F.avg_pool2d(x, 2, 2)
+        var = (F.avg_pool2d(x.square(), 2, 2) - mean.square()).clamp_min_(0.).mean(1, keepdim=True)
+        gx = F.pad((x[:, :, :, 1:] - x[:, :, :, :-1]).abs().mean(1, keepdim=True), (0, 1, 0, 0))
+        gy = F.pad((x[:, :, 1:, :] - x[:, :, :-1, :]).abs().mean(1, keepdim=True), (0, 0, 0, 1))
+        boundary = F.avg_pool2d(gx + gy, 2, 2)
+        entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(1, keepdim=True)
+        entropy = F.avg_pool2d(entropy / math.log(probs.shape[1]), 2, 2)
+        frequency = probs.mean((2, 3), keepdim=True).clamp_min(1e-4)
+        rarity = (probs / frequency.sqrt()).sum(1, keepdim=True)
+        rarity = F.avg_pool2d(rarity, 2, 2)
+        return (self._minmax(var) + self.boundary_weight * self._minmax(boundary) +
+                semantic_scale * (self.entropy_weight * self._minmax(entropy) +
+                                  self.rarity_weight * self._minmax(rarity)))
+
+    def _spectral_field(self, local, probs):
+        """Approximate the Fiedler field of a sparse, feature/boundary weighted pixel graph."""
+        x = F.normalize(local.detach().float(), dim=1)
+        right_d = (x[:, :, :, 1:] - x[:, :, :, :-1]).square().mean(1, keepdim=True)
+        down_d = (x[:, :, 1:, :] - x[:, :, :-1, :]).square().mean(1, keepdim=True)
+        p = probs.detach().float()
+        right_d = right_d + self.boundary_weight * (p[:, :, :, 1:] - p[:, :, :, :-1]).abs().mean(1, keepdim=True)
+        down_d = down_d + self.boundary_weight * (p[:, :, 1:, :] - p[:, :, :-1, :]).abs().mean(1, keepdim=True)
+        wr = torch.exp(-right_d / self.spectral_temperature).clamp_min_(1e-4)
+        wd = torch.exp(-down_d / self.spectral_temperature).clamp_min_(1e-4)
+
+        degree = torch.full_like(x[:, :1], self.spectral_self_loop)
+        degree[:, :, :, :-1] += wr
+        degree[:, :, :, 1:] += wr
+        degree[:, :, :-1, :] += wd
+        degree[:, :, 1:, :] += wd
+        sqrt_degree = degree.sqrt()
+        trivial = sqrt_degree / sqrt_degree.flatten(1).norm(dim=1).view(-1, 1, 1, 1).clamp_min(1e-6)
+
+        H, W = local.shape[-2:]
+        yy, xx = torch.meshgrid(torch.linspace(-1., 1., H, device=local.device),
+                                torch.linspace(-1., 1., W, device=local.device), indexing='ij')
+        value = (xx + 0.61803398875 * yy).view(1, 1, H, W).expand(local.shape[0], -1, -1, -1).float()
+
+        def orthonormalize(v):
+            v = v - (v * trivial).flatten(1).sum(1).view(-1, 1, 1, 1) * trivial
+            return v / v.flatten(1).norm(dim=1).view(-1, 1, 1, 1).clamp_min(1e-6)
+
+        value = orthonormalize(value)
+        for _ in range(self.spectral_iters):
+            u = value / sqrt_degree
+            out = self.spectral_self_loop * u
+            out[:, :, :, :-1] += wr * u[:, :, :, 1:]
+            out[:, :, :, 1:] += wr * u[:, :, :, :-1]
+            out[:, :, :-1, :] += wd * u[:, :, 1:, :]
+            out[:, :, 1:, :] += wd * u[:, :, :-1, :]
+            value = orthonormalize(out / sqrt_degree)
+
+        # Eigenvectors have arbitrary sign; orient them consistently towards increasing x.
+        correlation = (value * xx.view(1, 1, H, W)).flatten(1).sum(1)
+        value = value * torch.where(correlation < 0, -1., 1.).view(-1, 1, 1, 1)
+        return value
+
+    def _position_regions(self, xy, mass, dtype):
+        bands = torch.arange(self.pos_bands, device=xy.device, dtype=xy.dtype)
+        freq = (2. ** bands) * math.pi
+        x, y = xy[:, :1] * freq, xy[:, 1:] * freq
+        position = self.pos(torch.cat((x.sin(), x.cos(), y.sin(), y.cos()), dim=-1).to(dtype))
+        # Log-area distinguishes fine, base and merged regions; zero init preserves the C1 starting point.
+        area = (mass.log2() / 4.).unsqueeze(-1).to(dtype)
+        return position + self.area_proj(area)
+
+    def forward(self, feat, logits):
+        scale = self._routing_scale()
+        if scale == 0.0:
+            self.last_conf = logits.new_tensor(0.)
+            return torch.zeros_like(feat)
+
+        Bsz, C, H, W = feat.shape
+        if H % 4 or W % 4:
+            raise ValueError(f'AdaptiveCoverageScanBlock requires H/W divisible by 4, got {H}x{W}')
+        h, w, gh, gw = H // 2, W // 2, H // 4, W // 4
+        token_count, group_count = h * w, gh * gw
+        pair_count = min(int(round(self.adapt_fraction * group_count)), token_count // 5)
+
+        local = feat + self.local(feat)
+        packed = F.pixel_unshuffle(local, 2)
+        context = self.condense(packed)
+        context = context + self.detail_scale * (F.max_pool2d(local, 2, 2) - F.avg_pool2d(local, 2, 2))
+        base_tokens = self.norm(context.flatten(2).transpose(1, 2))
+        merged_tokens = self.norm(F.avg_pool2d(context, 2, 2).flatten(2).transpose(1, 2))
+        pixel_tokens = self.norm(local.flatten(2).transpose(1, 2))
+
+        with torch.no_grad():
+            probs = F.softmax(logits.detach().float(), dim=1)
+            entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(1) / math.log(logits.shape[1])
+            self.last_conf = (1. - entropy.mean()).detach()
+            complexity = self._complexity(local, probs, scale).flatten(1)
+            group_score = F.avg_pool2d(complexity.view(Bsz, 1, h, w), 2, 2).flatten(1)
+            spectral = self._spectral_field(local, probs)
+            spectral_base = F.avg_pool2d(spectral, 2, 2).flatten(1)
+            spectral_group = F.avg_pool2d(spectral, 4, 4).flatten(1)
+            spectral_pixel = spectral.flatten(1)
+            p_base = F.avg_pool2d(probs, 2, 2).flatten(2).transpose(1, 2)
+            p_group = F.avg_pool2d(probs, 4, 4).flatten(2).transpose(1, 2)
+            p_pixel = probs.flatten(2).transpose(1, 2)
+
+        prototypes = None
+        if self.semantic_proj is not None:
+            full_tokens = self.norm(local.flatten(2).transpose(1, 2))
+            p_flat = probs.flatten(2).to(full_tokens.dtype)
+            proto_mass = p_flat.sum(2).clamp_min(1e-6)
+            prototypes = torch.einsum('bkn,bnc->bkc', p_flat, full_tokens) / proto_mass.unsqueeze(-1)
+            self.last_proto_mass = (proto_mass / (H * W)).mean().detach()
+
+        all_tokens, all_keys, pixel_maps, all_masses = [], [], [], []
+        for b in range(Bsz):
+            if pair_count:
+                merge_groups = group_score[b].topk(pair_count, largest=False).indices
+                merge_cells = self._group_cells(merge_groups, gw, w)
+                merged_mask = torch.zeros(token_count, dtype=torch.bool, device=feat.device)
+                merged_mask[merge_cells.flatten()] = True
+                split_score = complexity[b].masked_fill(merged_mask, float('-inf'))
+                split_cells = split_score.topk(pair_count).indices
+            else:
+                merge_groups = torch.empty(0, dtype=torch.long, device=feat.device)
+                split_cells = torch.empty(0, dtype=torch.long, device=feat.device)
+                merged_mask = torch.zeros(token_count, dtype=torch.bool, device=feat.device)
+            split_mask = torch.zeros_like(merged_mask)
+            split_mask[split_cells] = True
+            regular_cells = (~(merged_mask | split_mask)).nonzero(as_tuple=False).flatten()
+
+            split_pixels = self._base_pixels(split_cells, w, W).flatten()
+            region_tokens = torch.cat((base_tokens[b, regular_cells], merged_tokens[b, merge_groups],
+                                       pixel_tokens[b, split_pixels]), dim=0)
+            region_probs = torch.cat((p_base[b, regular_cells], p_group[b, merge_groups],
+                                      p_pixel[b, split_pixels]), dim=0).to(region_tokens.dtype)
+            region_key = torch.cat((spectral_base[b, regular_cells], spectral_group[b, merge_groups],
+                                    spectral_pixel[b, split_pixels]), dim=0)
+            mass = torch.cat((torch.full_like(regular_cells, 4, dtype=torch.float),
+                              torch.full_like(merge_groups, 16, dtype=torch.float),
+                              torch.ones_like(split_pixels, dtype=torch.float)))
+
+            ry, rx = regular_cells // w, regular_cells % w
+            my, mx = merge_groups // gw, merge_groups % gw
+            sy, sx = split_pixels // W, split_pixels % W
+            xy = torch.cat((torch.stack(((2 * rx + .5) / max(W - 1, 1),
+                                         (2 * ry + .5) / max(H - 1, 1)), dim=1),
+                            torch.stack(((4 * mx + 1.5) / max(W - 1, 1),
+                                         (4 * my + 1.5) / max(H - 1, 1)), dim=1),
+                            torch.stack((sx.float() / max(W - 1, 1),
+                                         sy.float() / max(H - 1, 1)), dim=1)), dim=0)
+            region_tokens = region_tokens + self._position_regions(xy, mass, region_tokens.dtype)
+            if prototypes is not None:
+                semantic = torch.einsum('nk,kc->nc', region_probs, prototypes[b])
+                region_tokens = region_tokens + self.semantic_proj(semantic)
+
+            if region_tokens.shape[0] != token_count:
+                raise RuntimeError(f'adaptive token budget changed: {region_tokens.shape[0]} != {token_count}')
+
+            pixel_map = torch.full((H * W,), -1, dtype=torch.long, device=feat.device)
+            regular_pixels = self._base_pixels(regular_cells, w, W)
+            regular_ids = torch.arange(regular_cells.numel(), device=feat.device).unsqueeze(1).expand(-1, 4)
+            pixel_map[regular_pixels.flatten()] = regular_ids.flatten()
+            offset = regular_cells.numel()
+            if pair_count:
+                merge_cells = self._group_cells(merge_groups, gw, w)
+                merge_pixels = self._base_pixels(merge_cells.flatten(), w, W).view(pair_count, 16)
+                merge_ids = (offset + torch.arange(pair_count, device=feat.device)).unsqueeze(1).expand(-1, 16)
+                pixel_map[merge_pixels.flatten()] = merge_ids.flatten()
+                offset += pair_count
+                pixel_map[split_pixels] = offset + torch.arange(split_pixels.numel(), device=feat.device)
+            if (pixel_map < 0).any():
+                raise RuntimeError('adaptive regions do not form a complete partition')
+
+            # Stable coordinate tie-break only affects exactly equal spectral values.
+            region_key = region_key + 1e-5 * (xy[:, 0] + 0.61803398875 * xy[:, 1])
+            all_tokens.append(region_tokens)
+            all_keys.append(region_key)
+            pixel_maps.append(pixel_map)
+            all_masses.append(mass)
+
+        tokens = torch.stack(all_tokens)
+        keys = torch.stack(all_keys)
+        order = keys.argsort(dim=1)
+        sequence = tokens.gather(1, order.unsqueeze(-1).expand(-1, -1, C))
+        forward, backward = self.ssm(torch.cat((sequence, sequence.flip(1)), dim=0)).chunk(2, dim=0)
+        sequence_out = .5 * (forward + backward.flip(1))
+        inverse = order.argsort(dim=1)
+        token_out = sequence_out.gather(1, inverse.unsqueeze(-1).expand(-1, -1, C))
+        dense = torch.stack([token_out[b].index_select(0, pixel_maps[b]) for b in range(Bsz)])
+
+        self.last_context_tokens = token_count
+        self.last_token_ratio = feat.new_tensor(token_count / (H * W))
+        self.last_adaptive_pairs = pair_count
+        self.last_region_mass = torch.stack(all_masses).mean().detach()
+        self.last_partition_complete = True
+        return dense.transpose(1, 2).reshape(Bsz, C, H, W) * scale
