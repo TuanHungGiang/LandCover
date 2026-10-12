@@ -107,8 +107,8 @@ def encode(policy):
     return np.asarray(z, dtype=np.float64)
 
 
-def policy_key(policy, fidelity):
-    payload = json.dumps({"policy": policy, "fidelity": fidelity}, sort_keys=True)
+def policy_key(policy, fidelity, study_id=""):
+    payload = json.dumps({"policy": policy, "fidelity": fidelity, "study_id": study_id}, sort_keys=True)
     return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
 
@@ -224,8 +224,49 @@ def simulate_result(policy):
     return dict(miou=miou, hard_iou=hard, latency_ms=latency, best_epoch=0)
 
 
+def validate_internal_holdout(config_path):
+    """Fail closed: a policy search may not inspect the official LoveDA Val split."""
+    from utils.config import Config
+
+    cfg = Config.fromfile(str(config_path)).dataset_config
+    train, val = cfg.train_mode, cfg.val_mode
+    train_fraction, train_seed = train.get("holdout_fraction"), train.get("holdout_seed")
+    problems = []
+    if train.get("source_split") != "Train" or train.get("split_role") != "fit":
+        problems.append("train_mode must use source_split=Train, split_role=fit")
+    if val.get("source_split") != "Train" or val.get("split_role") != "holdout":
+        problems.append("val_mode must use source_split=Train, split_role=holdout")
+    if train_fraction is None or float(val.get("holdout_fraction", -1)) != float(train_fraction):
+        problems.append("train/val holdout_fraction differs")
+    if train_seed is None or int(val.get("holdout_seed", -1)) != int(train_seed):
+        problems.append("train/val holdout_seed differs")
+    if problems:
+        raise ValueError("Policy-search leakage guard rejected the config: " + "; ".join(problems))
+    return dict(source_split="Train", holdout_fraction=float(train_fraction), holdout_seed=int(train_seed))
+
+
+def build_split_manifest(config_path):
+    """Materialize and verify the exact image ids so the study is reproducible and cache-safe."""
+    from utils.config import Config
+    from rsseg.datasets.loveda_dataset import LoveDA
+
+    cfg = Config.fromfile(str(config_path)).dataset_config
+    fit = LoveDA(cfg.data_root, "train", **dict(cfg.train_mode))
+    holdout = LoveDA(cfg.data_root, "val", **dict(cfg.val_mode))
+    domains = tuple(cfg.train_mode.get("domains", ("Urban", "Rural")))
+    full = LoveDA(cfg.data_root, "train", source_split="Train", domains=domains)
+    encode = lambda paths: sorted(f"{domain}/{image_id}" for image_id, domain in paths)
+    fit_ids, holdout_ids, full_ids = map(set, (encode(fit.file_paths), encode(holdout.file_paths), encode(full.file_paths)))
+    if fit_ids & holdout_ids or fit_ids | holdout_ids != full_ids:
+        raise RuntimeError("Internal fit/holdout split is not a disjoint, complete partition of LoveDA Train")
+    payload = dict(fit=sorted(fit_ids), holdout=sorted(holdout_ids))
+    payload["sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    payload["counts"] = dict(fit=len(fit_ids), holdout=len(holdout_ids), full=len(full_ids))
+    return payload
+
+
 def run_trial(policy, fidelity, args, gpu, cache, lock):
-    key = policy_key(policy, fidelity)
+    key = policy_key(policy, fidelity, args.study_id)
     with lock:
         if key in cache:
             return cache[key]
@@ -241,7 +282,10 @@ def run_trial(policy, fidelity, args, gpu, cache, lock):
                      f"limit_val_batches={fidelity['val_fraction']}",
                      f"model_config.seghead.scan_cfg.warmup_epochs={fidelity['warmup']}",
                      f"model_config.seghead.scan_cfg.ramp_epochs={fidelity['ramp']}",
-                     f"gpus=[{gpu}]", "save_top_k=1", "save_last=False"] + policy_overrides(policy)
+                     f"gpus=[{gpu}]", f"dataset_config.train_mode.loader.batch_size={args.batch}",
+                     f"dataset_config.val_mode.loader.batch_size={args.val_batch}",
+                     f"accumulate_grad_batches={args.accumulate}",
+                     "save_top_k=1", "save_last=False"] + policy_overrides(policy)
         cmd = [sys.executable, "train.py", "-c", args.config, "--set", *overrides]
         with (exp / "command.txt").open("w") as f:
             f.write(" ".join(cmd) + "\n")
@@ -295,7 +339,11 @@ def choose_compromise(front):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-c", "--config", default="configs/loveda/gee_repvit_landcover_adaptive_spectral.py")
+    parser.add_argument("-c", "--config",
+                        default="configs/loveda/gee_repvit_landcover_adaptive_spectral_search.py",
+                        help="search config; must validate on an internal holdout from LoveDA Train")
+    parser.add_argument("--final-config", default="configs/loveda/gee_repvit_landcover_adaptive_spectral.py",
+                        help="clean full-Train/official-Val config used only in the emitted final command")
     parser.add_argument("--out", default="work_dirs/info_token_search")
     parser.add_argument("--gpus", nargs="+", type=int, default=[0, 1])
     parser.add_argument("--population", type=int, default=6)
@@ -307,15 +355,31 @@ def main():
     parser.add_argument("--val_fraction", type=float, default=0.50)
     parser.add_argument("--confirm_top", type=int, default=3)
     parser.add_argument("--latency_iters", type=int, default=20)
+    parser.add_argument("--batch", type=int, default=None, help="per-GPU train batch (default: m11=4, m15=2)")
+    parser.add_argument("--val-batch", type=int, default=2)
+    parser.add_argument("--accumulate", type=int, default=None, help="default: m11=2, m15=4")
     parser.add_argument("--simulate", action="store_true")
     args = parser.parse_args()
     if args.population < 4:
         parser.error("--population must be >= 4 (INFO needs three peers per candidate)")
     if not (0 < args.train_fraction <= 1 and 0 < args.val_fraction <= 1):
         parser.error("fractions must be in (0, 1]")
+    is_m15 = "m15" in Path(args.config).stem
+    args.batch = args.batch or (2 if is_m15 else 4)
+    args.accumulate = args.accumulate or (4 if is_m15 else 2)
 
     os.chdir(ROOT)
     Path(args.out).mkdir(parents=True, exist_ok=True)
+    split_meta = dict(simulated=True) if args.simulate else validate_internal_holdout(args.config)
+    if args.simulate:
+        manifest_digest = "simulated"
+    else:
+        manifest = build_split_manifest(args.config)
+        save_json(Path(args.out) / "split_manifest.json", manifest)
+        manifest_digest = manifest["sha256"]
+        split_meta.update(counts=manifest["counts"], manifest_sha256=manifest_digest)
+    args.study_id = (f"internal_loveda_train_holdout_v1:{Path(args.config).as_posix()}:"
+                     f"{manifest_digest}:b{args.batch}:a{args.accumulate}:vb{args.val_batch}")
     cache_path = Path(args.out) / "cache.json"
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     lock = threading.Lock()
@@ -351,11 +415,12 @@ def main():
     confirmed_front = pareto_front(confirmed)
     best = choose_compromise(confirmed_front)
     final_overrides = policy_overrides(best["policy"])
-    model_tag = "m15" if "m15" in Path(args.config).stem else "m11"
+    model_tag = "m15" if "m15" in Path(args.final_config).stem else "m11"
     final_exp = f"work_dirs/{model_tag}_mamba_info_final"
     artifact = dict(exact_ratio=EXACT_RATIO, algorithm="conservation-aware multi-fidelity Pareto INFO",
+                    search_split=split_meta, search_config=args.config, final_config=args.final_config,
                     selected=best, pareto_front=confirmed_front, final_overrides=final_overrides,
-                    final_command=[sys.executable, "train.py", "-c", args.config, "--set",
+                    final_command=[sys.executable, "train.py", "-c", args.final_config, "--set",
                                    f"exp_name={final_exp}", *final_overrides])
     save_json(Path(args.out) / "best_policy.json", artifact)
     print("\nSelected exact-25% policy:")

@@ -22,8 +22,10 @@ combination, and local search. The land-cover version adds:
    the 25% ratio is injected only after repair and cannot mutate.
 2. **Three-objective archive:** maximize validation mIoU and mean IoU of barren/forest, while minimizing
    measured adaptive-block latency. Final selection comes from the non-dominated set.
-3. **Multi-fidelity evaluation:** 12-epoch partial-data screening precedes 24-epoch full-data
-   confirmation. Only the selected policy is trained from scratch for 96 epochs.
+3. **Leakage-safe multi-fidelity evaluation:** LoveDA Train is deterministically partitioned within
+   each Urban/Rural domain into 80% search-fit and 20% search-holdout. Twelve-epoch screening precedes
+   24-epoch confirmation on that internal holdout. Official LoveDA Val is never loaded by the search.
+   Only the selected policy is retrained on full Train for 96 epochs and then evaluated on official Val.
 4. **C2 warm start:** the known policy is one population member, preventing a small GPU budget from
    spending every trial rediscovering the baseline.
 
@@ -35,9 +37,12 @@ selected policies with the same seeds.
 
 ```bash
 python tools/check_info_token_search.py
+python tools/check_loveda_search_split.py
 python tools/search_token_policy_info.py --gpus 0 1 --population 6 --generations 2
 ```
 
 The search is restartable through `work_dirs/info_token_search/cache.json`. Copy the command written
 to `best_policy.json` for the fresh 96-epoch run. Never report a 12/24-epoch screening score as the
-final model result.
+final model result. The script fails closed if its search validation loader points to official Val,
+and writes every selected image id plus a SHA-256 digest to `split_manifest.json`. The digest is part
+of the cache key, so trials from official Val or a different internal split cannot be reused.
