@@ -261,7 +261,11 @@ def build_split_manifest(config_path):
 
     cfg = Config.fromfile(str(config_path)).dataset_config
     domains = tuple(cfg.train_mode.get("domains", ("Urban", "Rural")))
-    full = LoveDA(cfg.data_root, "train", source_split="Train", domains=domains)
+    # This instance is used only to enumerate image ids.  LoveDA's BaseDataset
+    # still expects a transform mapping even when no samples are loaded, so pass
+    # an explicit empty mapping instead of relying on its ``None`` default.
+    full = LoveDA(cfg.data_root, "train", transform={},
+                  source_split="Train", domains=domains)
     encode = lambda paths: sorted(f"{domain}/{image_id}" for image_id, domain in paths)
     full_ids = set(encode(full.file_paths))
     payload, all_holdouts = dict(folds=[]), set()
