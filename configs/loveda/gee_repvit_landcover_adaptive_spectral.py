@@ -8,6 +8,11 @@ Fiedler field; variable-size region tokens are ordered by its pixel-mass average
 _base_ = './gee_repvit_landcover.py'
 
 exp_name = 'work_dirs/m11_mamba_landcover_adaptive_spectral'
+# The ablation base disables ``last.ckpt`` to avoid writing dozens of short-run
+# checkpoints.  This is a long final run, so retain the most recent validated
+# state as well as the best checkpoint; otherwise a transient Kaggle I/O error
+# can discard many hours of training.
+save_last = True
 
 model_config = dict(
     seghead=dict(

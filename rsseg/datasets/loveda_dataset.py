@@ -2,6 +2,7 @@ from .base_dataset import BaseDataset
 from PIL import Image
 import os
 import hashlib
+import time
 import numpy as np
 class LoveDA(BaseDataset):
     def __init__(self,data_root='data/vaihingen', mode='train', transform=None,img_dir='images_png', mask_dir='masks_png', img_suffix='.png', mask_suffix='.png', domains=('Urban', 'Rural'),
@@ -75,22 +76,48 @@ class LoveDA(BaseDataset):
     def get_path(self, data_root, img_dir, mask_dir):
         img_ids = []
         for domain in self.domains:
-            img_filename_list = sorted(os.listdir(os.path.join(data_root, domain, img_dir)))
+            image_root = os.path.join(data_root, domain, img_dir)
+            img_filename_list = sorted(
+                name for name in os.listdir(image_root) if name.endswith(self.img_suffix))
+            domain_image_ids = [str(name.rsplit('.', 1)[0]) for name in img_filename_list]
             if self.mode != 'test':
-                mask_filename_list = os.listdir(os.path.join(data_root, domain, mask_dir))
-                assert len(img_filename_list) == len(mask_filename_list)
+                mask_root = os.path.join(data_root, domain, mask_dir)
+                mask_filename_list = sorted(
+                    name for name in os.listdir(mask_root) if name.endswith(self.mask_suffix))
+                domain_mask_ids = [str(name.rsplit('.', 1)[0]) for name in mask_filename_list]
+                missing_images = sorted(set(domain_mask_ids) - set(domain_image_ids))
+                missing_masks = sorted(set(domain_image_ids) - set(domain_mask_ids))
+                if missing_images or missing_masks:
+                    raise FileNotFoundError(
+                        f'LoveDA {self.source_split}/{domain} image-mask ids differ: '
+                        f'missing_images={missing_images[:8]}, missing_masks={missing_masks[:8]}')
             domain_ids = self.partition_ids(
-                [str(name.rsplit('.', 1)[0]) for name in img_filename_list], domain,
+                domain_image_ids, domain,
                 self.split_role, self.holdout_fraction, self.holdout_seed,
                 self.num_folds, self.fold_index)
             img_ids += [(image_id, domain) for image_id in domain_ids]
         return img_ids
 
+    @staticmethod
+    def _open_with_retry(path, mode, attempts=4):
+        """Read through occasional transient Kaggle input-mount misses.
+
+        A permanent missing/corrupt file is still raised after a short bounded
+        retry; samples are never silently skipped or replaced.
+        """
+        for attempt in range(attempts):
+            try:
+                with Image.open(path) as image:
+                    return image.convert(mode)
+            except (FileNotFoundError, OSError):
+                if attempt + 1 == attempts:
+                    raise
+                time.sleep(0.25 * (2 ** attempt))
 
     def load_img_and_mask(self, index):
         img_id, img_type = self.file_paths[index]
         img_name = os.path.join(self.data_root, img_type, self.img_dir, img_id + self.img_suffix)
-        img = Image.open(img_name).convert('RGB')
+        img = self._open_with_retry(img_name, 'RGB')
 
         if self.mode == 'test':
             mask = np.array(img)
@@ -98,7 +125,7 @@ class LoveDA(BaseDataset):
             return [img, mask, img_id]
 
         mask_name = os.path.join(self.data_root, img_type, self.mask_dir, img_id + self.mask_suffix)
-        mask = Image.open(mask_name).convert('L')
+        mask = self._open_with_retry(mask_name, 'L')
 
         np_mask = np.array(mask)
         np_mask[np_mask == 0] = 8
