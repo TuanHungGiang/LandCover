@@ -1,0 +1,446 @@
+{
+  "algorithm": "cross-validated conservation-aware multi-fidelity Pareto INFO",
+  "cv_penalty": 0.5,
+  "exact_ratio": 0.25,
+  "final_command": [
+    "/usr/bin/python3",
+    "train.py",
+    "-c",
+    "configs/loveda/gee_repvit_landcover_adaptive_spectral.py",
+    "--set",
+    "exp_name=work_dirs/m11_mamba_info_final",
+    "model_config.seghead.scan_cfg.ratio=0.25",
+    "model_config.seghead.scan_cfg.adapt_fraction=0.358621",
+    "model_config.seghead.scan_cfg.boundary_weight=0.930142",
+    "model_config.seghead.scan_cfg.entropy_weight=0.710327",
+    "model_config.seghead.scan_cfg.rarity_weight=0.686182",
+    "model_config.seghead.scan_cfg.spectral_temperature=0.743445",
+    "model_config.seghead.scan_cfg.spectral_self_loop=1.196127",
+    "model_config.seghead.scan_cfg.spectral_iters=6",
+    "model_config.seghead.scan_cfg.d_state=8",
+    "model_config.seghead.scan_cfg.chunk=32"
+  ],
+  "final_config": "configs/loveda/gee_repvit_landcover_adaptive_spectral.py",
+  "final_overrides": [
+    "model_config.seghead.scan_cfg.ratio=0.25",
+    "model_config.seghead.scan_cfg.adapt_fraction=0.358621",
+    "model_config.seghead.scan_cfg.boundary_weight=0.930142",
+    "model_config.seghead.scan_cfg.entropy_weight=0.710327",
+    "model_config.seghead.scan_cfg.rarity_weight=0.686182",
+    "model_config.seghead.scan_cfg.spectral_temperature=0.743445",
+    "model_config.seghead.scan_cfg.spectral_self_loop=1.196127",
+    "model_config.seghead.scan_cfg.spectral_iters=6",
+    "model_config.seghead.scan_cfg.d_state=8",
+    "model_config.seghead.scan_cfg.chunk=32"
+  ],
+  "pareto_front": [
+    {
+      "fidelity": {
+        "epochs": 24,
+        "name": "confirm",
+        "ramp": 4,
+        "train_fraction": 1.0,
+        "val_every": 6,
+        "val_fraction": 1.0,
+        "warmup": 4
+      },
+      "folds": [
+        {
+          "eval_epoch": 23,
+          "exp": "work_dirs/info_token_search/trial_488b590003cf",
+          "fidelity": {
+            "epochs": 24,
+            "name": "confirm",
+            "ramp": 4,
+            "train_fraction": 1.0,
+            "val_every": 6,
+            "val_fraction": 1.0,
+            "warmup": 4
+          },
+          "fold_index": 0,
+          "hard_iou": 0.5651090396315418,
+          "key": "488b590003cf",
+          "latency_ms": 14.788682556152343,
+          "miou": 0.6121860479216149,
+          "peak_epoch": 23,
+          "peak_miou": 0.6121860479216149,
+          "policy": {
+            "adapt_fraction": 0.358621,
+            "boundary_weight": 0.930142,
+            "chunk": 32,
+            "d_state": 8,
+            "entropy_weight": 0.710327,
+            "rarity_weight": 0.686182,
+            "spectral_iters": 6,
+            "spectral_self_loop": 1.196127,
+            "spectral_temperature": 0.743445
+          },
+          "train_minutes": 95.33555363814035
+        },
+        {
+          "eval_epoch": 23,
+          "exp": "work_dirs/info_token_search/trial_eec0f8274b8f",
+          "fidelity": {
+            "epochs": 24,
+            "name": "confirm",
+            "ramp": 4,
+            "train_fraction": 1.0,
+            "val_every": 6,
+            "val_fraction": 1.0,
+            "warmup": 4
+          },
+          "fold_index": 1,
+          "hard_iou": 0.565889007258739,
+          "key": "eec0f8274b8f",
+          "latency_ms": 14.921122741699218,
+          "miou": 0.6115915216824224,
+          "peak_epoch": 23,
+          "peak_miou": 0.6115915216824224,
+          "policy": {
+            "adapt_fraction": 0.358621,
+            "boundary_weight": 0.930142,
+            "chunk": 32,
+            "d_state": 8,
+            "entropy_weight": 0.710327,
+            "rarity_weight": 0.686182,
+            "spectral_iters": 6,
+            "spectral_self_loop": 1.196127,
+            "spectral_temperature": 0.743445
+          },
+          "train_minutes": 95.43828607797623
+        },
+        {
+          "eval_epoch": 23,
+          "exp": "work_dirs/info_token_search/trial_bdef400cfbdd",
+          "fidelity": {
+            "epochs": 24,
+            "name": "confirm",
+            "ramp": 4,
+            "train_fraction": 1.0,
+            "val_every": 6,
+            "val_fraction": 1.0,
+            "warmup": 4
+          },
+          "fold_index": 2,
+          "hard_iou": 0.5257728315293084,
+          "key": "bdef400cfbdd",
+          "latency_ms": 16.97413024902344,
+          "miou": 0.6038345327278468,
+          "peak_epoch": 23,
+          "peak_miou": 0.6038345327278468,
+          "policy": {
+            "adapt_fraction": 0.358621,
+            "boundary_weight": 0.930142,
+            "chunk": 32,
+            "d_state": 8,
+            "entropy_weight": 0.710327,
+            "rarity_weight": 0.686182,
+            "spectral_iters": 6,
+            "spectral_self_loop": 1.196127,
+            "spectral_temperature": 0.743445
+          },
+          "train_minutes": 99.97084259589514
+        }
+      ],
+      "hard_iou": 0.5522569594731964,
+      "hard_iou_std": 0.018729813348171954,
+      "key": "83b55a7d3076",
+      "latency_ms": 15.561311848958333,
+      "miou": 0.6092040341106281,
+      "miou_std": 0.003804560788232909,
+      "policy": {
+        "adapt_fraction": 0.358621,
+        "boundary_weight": 0.930142,
+        "chunk": 32,
+        "d_state": 8,
+        "entropy_weight": 0.710327,
+        "rarity_weight": 0.686182,
+        "spectral_iters": 6,
+        "spectral_self_loop": 1.196127,
+        "spectral_temperature": 0.743445
+      },
+      "selection_hard_iou": 0.5428920527991105,
+      "selection_miou": 0.6073017537165116
+    },
+    {
+      "fidelity": {
+        "epochs": 24,
+        "name": "confirm",
+        "ramp": 4,
+        "train_fraction": 1.0,
+        "val_every": 6,
+        "val_fraction": 1.0,
+        "warmup": 4
+      },
+      "folds": [
+        {
+          "eval_epoch": 23,
+          "exp": "work_dirs/info_token_search/trial_d6fa015ba55a",
+          "fidelity": {
+            "epochs": 24,
+            "name": "confirm",
+            "ramp": 4,
+            "train_fraction": 1.0,
+            "val_every": 6,
+            "val_fraction": 1.0,
+            "warmup": 4
+          },
+          "fold_index": 0,
+          "hard_iou": 0.566987756667275,
+          "key": "d6fa015ba55a",
+          "latency_ms": 17.679771423339844,
+          "miou": 0.6104798073104897,
+          "peak_epoch": 23,
+          "peak_miou": 0.6104798073104897,
+          "policy": {
+            "adapt_fraction": 0.25,
+            "boundary_weight": 0.75,
+            "chunk": 32,
+            "d_state": 8,
+            "entropy_weight": 0.5,
+            "rarity_weight": 0.25,
+            "spectral_iters": 6,
+            "spectral_self_loop": 1.0,
+            "spectral_temperature": 0.5
+          },
+          "train_minutes": 99.41221798658371
+        },
+        {
+          "eval_epoch": 23,
+          "exp": "work_dirs/info_token_search/trial_66f10f6c69c1",
+          "fidelity": {
+            "epochs": 24,
+            "name": "confirm",
+            "ramp": 4,
+            "train_fraction": 1.0,
+            "val_every": 6,
+            "val_fraction": 1.0,
+            "warmup": 4
+          },
+          "fold_index": 1,
+          "hard_iou": 0.5659461459114523,
+          "key": "66f10f6c69c1",
+          "latency_ms": 13.639067077636719,
+          "miou": 0.6138539447532764,
+          "peak_epoch": 23,
+          "peak_miou": 0.6138539447532764,
+          "policy": {
+            "adapt_fraction": 0.25,
+            "boundary_weight": 0.75,
+            "chunk": 32,
+            "d_state": 8,
+            "entropy_weight": 0.5,
+            "rarity_weight": 0.25,
+            "spectral_iters": 6,
+            "spectral_self_loop": 1.0,
+            "spectral_temperature": 0.5
+          },
+          "train_minutes": 94.25973079999288
+        },
+        {
+          "eval_epoch": 23,
+          "exp": "work_dirs/info_token_search/trial_5876021d83f3",
+          "fidelity": {
+            "epochs": 24,
+            "name": "confirm",
+            "ramp": 4,
+            "train_fraction": 1.0,
+            "val_every": 6,
+            "val_fraction": 1.0,
+            "warmup": 4
+          },
+          "fold_index": 2,
+          "hard_iou": 0.5243150737467658,
+          "key": "5876021d83f3",
+          "latency_ms": 14.29864501953125,
+          "miou": 0.6018848037522677,
+          "peak_epoch": 23,
+          "peak_miou": 0.6018848037522677,
+          "policy": {
+            "adapt_fraction": 0.25,
+            "boundary_weight": 0.75,
+            "chunk": 32,
+            "d_state": 8,
+            "entropy_weight": 0.5,
+            "rarity_weight": 0.25,
+            "spectral_iters": 6,
+            "spectral_self_loop": 1.0,
+            "spectral_temperature": 0.5
+          },
+          "train_minutes": 94.2105237086614
+        }
+      ],
+      "hard_iou": 0.552416325441831,
+      "hard_iou_std": 0.01987513519222308,
+      "key": "4fe5f303bfd6",
+      "latency_ms": 15.20582784016927,
+      "miou": 0.6087395186053446,
+      "miou_std": 0.005038950794126907,
+      "policy": {
+        "adapt_fraction": 0.25,
+        "boundary_weight": 0.75,
+        "chunk": 32,
+        "d_state": 8,
+        "entropy_weight": 0.5,
+        "rarity_weight": 0.25,
+        "spectral_iters": 6,
+        "spectral_self_loop": 1.0,
+        "spectral_temperature": 0.5
+      },
+      "selection_hard_iou": 0.5424787578457194,
+      "selection_miou": 0.6062200432082812
+    }
+  ],
+  "search_config": "configs/loveda/gee_repvit_landcover_adaptive_spectral_search.py",
+  "search_split": {
+    "counts": {
+      "folds": [
+        {
+          "fit": 1680,
+          "holdout": 842
+        },
+        {
+          "fit": 1682,
+          "holdout": 840
+        },
+        {
+          "fit": 1682,
+          "holdout": 840
+        }
+      ],
+      "full": 2522
+    },
+    "holdout_seed": 2026,
+    "manifest_sha256": "d107cfb17872ddd1b2a64697b51801b9fd61984098831ed95bdc4c38a89b6ec9",
+    "num_folds": 3,
+    "source_split": "Train"
+  },
+  "selected": {
+    "fidelity": {
+      "epochs": 24,
+      "name": "confirm",
+      "ramp": 4,
+      "train_fraction": 1.0,
+      "val_every": 6,
+      "val_fraction": 1.0,
+      "warmup": 4
+    },
+    "folds": [
+      {
+        "eval_epoch": 23,
+        "exp": "work_dirs/info_token_search/trial_488b590003cf",
+        "fidelity": {
+          "epochs": 24,
+          "name": "confirm",
+          "ramp": 4,
+          "train_fraction": 1.0,
+          "val_every": 6,
+          "val_fraction": 1.0,
+          "warmup": 4
+        },
+        "fold_index": 0,
+        "hard_iou": 0.5651090396315418,
+        "key": "488b590003cf",
+        "latency_ms": 14.788682556152343,
+        "miou": 0.6121860479216149,
+        "peak_epoch": 23,
+        "peak_miou": 0.6121860479216149,
+        "policy": {
+          "adapt_fraction": 0.358621,
+          "boundary_weight": 0.930142,
+          "chunk": 32,
+          "d_state": 8,
+          "entropy_weight": 0.710327,
+          "rarity_weight": 0.686182,
+          "spectral_iters": 6,
+          "spectral_self_loop": 1.196127,
+          "spectral_temperature": 0.743445
+        },
+        "train_minutes": 95.33555363814035
+      },
+      {
+        "eval_epoch": 23,
+        "exp": "work_dirs/info_token_search/trial_eec0f8274b8f",
+        "fidelity": {
+          "epochs": 24,
+          "name": "confirm",
+          "ramp": 4,
+          "train_fraction": 1.0,
+          "val_every": 6,
+          "val_fraction": 1.0,
+          "warmup": 4
+        },
+        "fold_index": 1,
+        "hard_iou": 0.565889007258739,
+        "key": "eec0f8274b8f",
+        "latency_ms": 14.921122741699218,
+        "miou": 0.6115915216824224,
+        "peak_epoch": 23,
+        "peak_miou": 0.6115915216824224,
+        "policy": {
+          "adapt_fraction": 0.358621,
+          "boundary_weight": 0.930142,
+          "chunk": 32,
+          "d_state": 8,
+          "entropy_weight": 0.710327,
+          "rarity_weight": 0.686182,
+          "spectral_iters": 6,
+          "spectral_self_loop": 1.196127,
+          "spectral_temperature": 0.743445
+        },
+        "train_minutes": 95.43828607797623
+      },
+      {
+        "eval_epoch": 23,
+        "exp": "work_dirs/info_token_search/trial_bdef400cfbdd",
+        "fidelity": {
+          "epochs": 24,
+          "name": "confirm",
+          "ramp": 4,
+          "train_fraction": 1.0,
+          "val_every": 6,
+          "val_fraction": 1.0,
+          "warmup": 4
+        },
+        "fold_index": 2,
+        "hard_iou": 0.5257728315293084,
+        "key": "bdef400cfbdd",
+        "latency_ms": 16.97413024902344,
+        "miou": 0.6038345327278468,
+        "peak_epoch": 23,
+        "peak_miou": 0.6038345327278468,
+        "policy": {
+          "adapt_fraction": 0.358621,
+          "boundary_weight": 0.930142,
+          "chunk": 32,
+          "d_state": 8,
+          "entropy_weight": 0.710327,
+          "rarity_weight": 0.686182,
+          "spectral_iters": 6,
+          "spectral_self_loop": 1.196127,
+          "spectral_temperature": 0.743445
+        },
+        "train_minutes": 99.97084259589514
+      }
+    ],
+    "hard_iou": 0.5522569594731964,
+    "hard_iou_std": 0.018729813348171954,
+    "key": "83b55a7d3076",
+    "latency_ms": 15.561311848958333,
+    "miou": 0.6092040341106281,
+    "miou_std": 0.003804560788232909,
+    "policy": {
+      "adapt_fraction": 0.358621,
+      "boundary_weight": 0.930142,
+      "chunk": 32,
+      "d_state": 8,
+      "entropy_weight": 0.710327,
+      "rarity_weight": 0.686182,
+      "spectral_iters": 6,
+      "spectral_self_loop": 1.196127,
+      "spectral_temperature": 0.743445
+    },
+    "selection_hard_iou": 0.5428920527991105,
+    "selection_miou": 0.6073017537165116
+  }
+}
