@@ -100,3 +100,13 @@ Mở `kaggle_train_all.ipynb` trên Kaggle, bật GPU Accelerator và Run All. N
 - `/kaggle/input/datasets/alienxc137/loveda-satellite-images-semantic-segmentation/Val`
 
 Với từng model, notebook chạy một optimizer step thử nghiệm, tìm batch size nguyên lớn nhất bằng exponential/binary search, bắt CUDA OOM, dọn VRAM và tự giảm batch. OOM trong lúc train cũng được bắt để session và các model kế tiếp tiếp tục chạy. Kết quả được lưu dần trong `/kaggle/working/loveda_baseline_runs`.
+
+
+## Kaggle notebooks chia đôi
+
+Để chạy hai phiên độc lập:
+
+- `kaggle_train_part1.ipynb`: 10 model đầu, output ở `/kaggle/working/loveda_baseline_runs_part1`.
+- `kaggle_train_part2.ipynb`: 9 model sau, output ở `/kaggle/working/loveda_baseline_runs_part2`.
+
+Hai notebook giữ nguyên cơ chế tự tìm batch size tối đa và tiếp tục khi CUDA OOM.
