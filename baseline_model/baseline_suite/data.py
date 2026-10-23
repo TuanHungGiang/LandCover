@@ -68,16 +68,42 @@ class LoveDADataset(Dataset):
         self.crop_size = crop_size
         self.training = training
         self.seed = seed
+        # Some Kaggle mirrors add an extra directory level (for example
+        # Train/Train/Rural/...). Discover official images_png/masks_png pairs
+        # recursively instead of assuming an exact nesting depth.
         samples: list[tuple[Path, Path]] = []
-        for domain in ("Rural", "Urban"):
-            image_dir, mask_dir = self.root / domain / "images_png", self.root / domain / "masks_png"
-            if not image_dir.is_dir() or not mask_dir.is_dir():
+        image_dirs = sorted(
+            path for path in self.root.rglob("*")
+            if path.is_dir() and path.name.lower() == "images_png"
+        )
+        for image_dir in image_dirs:
+            mask_dir = next(
+                (
+                    sibling
+                    for sibling in image_dir.parent.iterdir()
+                    if sibling.is_dir() and sibling.name.lower() == "masks_png"
+                ),
+                None,
+            )
+            if mask_dir is None:
                 continue
             masks = {p.stem: p for p in mask_dir.glob("*.png")}
-            samples.extend((p, masks[p.stem]) for p in image_dir.glob("*.png") if p.stem in masks)
-        self.samples = sorted(samples, key=lambda pair: (pair[0].parent.parent.name, pair[0].stem))
+            samples.extend(
+                (image_path, masks[image_path.stem])
+                for image_path in image_dir.glob("*.png")
+                if image_path.stem in masks
+            )
+        self.samples = sorted(samples, key=lambda pair: pair[0].as_posix())
         if not self.samples:
-            raise RuntimeError(f"No paired images/masks found in {self.root}")
+            discovered = sorted(
+                str(path.relative_to(self.root))
+                for path in self.root.rglob("*")
+                if path.is_dir() and path.name.lower() in {"images_png", "masks_png"}
+            )
+            raise RuntimeError(
+                f"No paired images/masks found in {self.root}. "
+                f"Discovered candidate directories: {discovered[:12]}"
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
