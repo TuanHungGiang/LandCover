@@ -90,3 +90,13 @@ Các URL nguồn chính thức nằm trong `sources.json`. Bản `rssegmentation
 - Cùng số epoch và effective batch size cho mọi model.
 - Không bật `--pretrained` nếu máy không có Internet/cache checkpoint.
 - Với GPU ít VRAM, giảm `--batch-size` và tăng `--accumulate` tương ứng.
+
+
+## Kaggle: tự tối ưu batch size và tiếp tục khi OOM
+
+Mở `kaggle_train_all.ipynb` trên Kaggle, bật GPU Accelerator và Run All. Notebook dùng trực tiếp:
+
+- `/kaggle/input/datasets/alienxc137/loveda-satellite-images-semantic-segmentation/Train`
+- `/kaggle/input/datasets/alienxc137/loveda-satellite-images-semantic-segmentation/Val`
+
+Với từng model, notebook chạy một optimizer step thử nghiệm, tìm batch size nguyên lớn nhất bằng exponential/binary search, bắt CUDA OOM, dọn VRAM và tự giảm batch. OOM trong lúc train cũng được bắt để session và các model kế tiếp tiếp tục chạy. Kết quả được lưu dần trong `/kaggle/working/loveda_baseline_runs`.
