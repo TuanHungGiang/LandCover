@@ -1,0 +1,21 @@
+{
+  "PSPNet": "https://github.com/hszhao/semseg",
+  "DeepLabv3+": "https://github.com/tensorflow/models/tree/master/research/deeplab",
+  "DANet": "https://github.com/CASIA-IVA-Lab/DANet",
+  "Semantic FPN": "https://github.com/open-mmlab/mmsegmentation/tree/main/configs/sem_fpn",
+  "FarSeg": "https://github.com/Z-Zheng/FarSeg",
+  "OCRNet": "https://github.com/openseg-group/openseg.pytorch",
+  "LANet": "https://github.com/DingLei14/LANet",
+  "ISNet": "https://github.com/SegmentationBLWX/sssegmentation",
+  "Segmenter": "https://github.com/rstrudel/segmenter",
+  "SwinUperNet": "https://github.com/SwinTransformer/Swin-Transformer-Semantic-Segmentation",
+  "MANet": "https://github.com/lironui/Multi-Attention-Network",
+  "FLANet": "https://github.com/Ilareina/FullyAttentional",
+  "ConvNeXt": "https://github.com/facebookresearch/ConvNeXt",
+  "PoolFormer": "https://github.com/sail-sg/poolformer",
+  "BiFormer": "https://github.com/rayleizhu/BiFormer",
+  "EfficientViT": "https://github.com/mit-han-lab/efficientvit",
+  "DDP": "https://github.com/JiYuanFeng/DDP",
+  "LOGCAN++": "https://github.com/xwmaxwma/rssegmentation",
+  "SCSM": "https://github.com/xwmaxwma/rssegmentation"
+}

@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+runs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+.pytest_cache/
+official_sources/
