@@ -1,5 +1,10 @@
 # LoveDA unified baseline suite
 
+> **Cảnh báo:** các notebook `kaggle_train_all.ipynb`, `kaggle_train_part1.ipynb` và
+> `kaggle_train_part2.ipynb` dùng model chuẩn hóa/rút gọn để thử pipeline, **không được dùng số liệu
+> của chúng trong bảng baseline công bố**. Với thí nghiệm có thể audit, dùng các notebook trong
+> `paper_faithful/` và đọc `paper_faithful/README.md`.
+
 Thư mục này cung cấp **một pipeline train/evaluate chung** cho 19 tên model trong bảng baseline.
 
 ## Quy tắc dữ liệu bắt buộc
@@ -90,8 +95,6 @@ Các URL nguồn chính thức nằm trong `sources.json`. Bản `rssegmentation
 - Cùng số epoch và effective batch size cho mọi model.
 - Không bật `--pretrained` nếu máy không có Internet/cache checkpoint.
 - Với GPU ít VRAM, giảm `--batch-size` và tăng `--accumulate` tương ứng.
-
-
 ## Kaggle: tự tối ưu batch size và tiếp tục khi OOM
 
 Mở `kaggle_train_all.ipynb` trên Kaggle, bật GPU Accelerator và Run All. Notebook dùng trực tiếp:
@@ -110,3 +113,4 @@ Với từng model, notebook chạy một optimizer step thử nghiệm, tìm ba
 - `kaggle_train_part2.ipynb`: 9 model sau, output ở `/kaggle/working/loveda_baseline_runs_part2`.
 
 Hai notebook giữ nguyên cơ chế tự tìm batch size tối đa và tiếp tục khi CUDA OOM.
+
