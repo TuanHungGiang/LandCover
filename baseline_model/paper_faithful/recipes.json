@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "protocol": {
+    "paper": "A Novel Scene Coupling Semantic Mask Network for Remote Sensing Image Segmentation",
+    "paper_url": "https://arxiv.org/abs/2501.13130",
+    "train_split": "LoveDA Train only",
+    "evaluation_split": "LoveDA Val only (local reproduction; published paper table used LoveDA Test)",
+    "crop_size": [512, 512],
+    "scale_factors": [0.5, 0.75, 1.0, 1.25, 1.5],
+    "horizontal_flip_probability": 0.5,
+    "vertical_flip_probability": 0.5,
+    "rotation_degrees": 0.2,
+    "rotation_note": "The paper says random rotation without a range; 0.2 degrees is taken from the authors' released rssegmentation transform config.",
+    "max_iterations": 80000,
+    "effective_global_batch": 16,
+    "selection_rule": "Evaluate the final 80k checkpoint once; never choose a checkpoint using Val.",
+    "metric": "7-class mIoU with raw label 0 ignored and labels 1..7 mapped to 0..6"
+  },
+  "implementation": {
+    "repository": "https://github.com/open-mmlab/mmsegmentation.git",
+    "commit": "b040e147adfa027bbc071b624bedf0ae84dfc922",
+    "note": "Pinned audited implementation for the nine recipes below. Each generated config is saved with its run."
+  },
+  "models": {
+    "pspnet": {
+      "status": "verified_loveda",
+      "display_name": "PSPNet",
+      "config": "configs/pspnet/pspnet_r50-d8_4xb4-80k_loveda-512x512.py",
+      "variant": "PSPNet, ResNet-50-v1c, output stride 8",
+      "pretrained": "open-mmlab://resnet50_v1c",
+      "optimizer": "SGD from MMSegmentation 80k schedule",
+      "evidence": [
+        "https://github.com/hszhao/semseg",
+        "https://github.com/open-mmlab/mmsegmentation/blob/b040e147adfa027bbc071b624bedf0ae84dfc922/configs/pspnet/pspnet_r50-d8_4xb4-80k_loveda-512x512.py"
+      ]
+    },
+    "deeplabv3plus": {
+      "status": "verified_loveda",
+      "display_name": "DeepLabv3+",
+      "config": "configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb4-80k_loveda-512x512.py",
+      "variant": "DeepLabv3+, ResNet-50-v1c, output stride 8",
+      "pretrained": "open-mmlab://resnet50_v1c",
+      "optimizer": "SGD from MMSegmentation 80k schedule",
+      "evidence": [
+        "https://github.com/tensorflow/models/tree/master/research/deeplab",
+        "https://github.com/open-mmlab/mmsegmentation/blob/b040e147adfa027bbc071b624bedf0ae84dfc922/configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb4-80k_loveda-512x512.py"
+      ]
+    },
+    "danet": {
+      "status": "audited_reproduction",
+      "display_name": "DANet",
+      "config": "configs/danet/danet_r50-d8_4xb4-80k_ade20k-512x512.py",
+      "variant": "DANet, ResNet-50-v1c, output stride 8",
+      "pretrained": "open-mmlab://resnet50_v1c",
+      "optimizer": "SGD from official MMSegmentation DANet recipe",
+      "limitation": "The SCSM paper does not identify the exact DANet backbone variant used in Table 1.",
+      "evidence": ["https://github.com/CASIA-IVA-Lab/DANet"]
+    },
+    "semantic_fpn": {
+      "status": "audited_reproduction",
+      "display_name": "Semantic FPN",
+      "config": "configs/sem_fpn/fpn_r50_4xb2-80k_cityscapes-512x1024.py",
+      "variant": "Semantic FPN, ResNet-50-v1c",
+      "pretrained": "open-mmlab://resnet50_v1c",
+      "optimizer": "SGD from official MMSegmentation Semantic FPN recipe",
+      "limitation": "Dataset/crop are replaced by the shared SCSM LoveDA protocol.",
+      "evidence": ["https://github.com/open-mmlab/mmsegmentation/tree/b040e147adfa027bbc071b624bedf0ae84dfc922/configs/sem_fpn"]
+    },
+    "ocrnet": {
+      "status": "audited_reproduction",
+      "display_name": "OCRNet",
+      "config": "configs/ocrnet/ocrnet_hr48_4xb4-80k_ade20k-512x512.py",
+      "variant": "OCRNet, HRNetV2-W48",
+      "pretrained": "open-mmlab://msra/hrnetv2_w48",
+      "optimizer": "SGD from official MMSegmentation OCRNet recipe",
+      "limitation": "The SCSM paper does not identify the exact OCRNet backbone variant used in Table 1.",
+      "evidence": ["https://github.com/openseg-group/openseg.pytorch"]
+    },
+    "segmenter": {
+      "status": "audited_reproduction",
+      "display_name": "Segmenter",
+      "config": "configs/segmenter/segmenter_vit-b_mask_8xb1-160k_ade20k-512x512.py",
+      "variant": "Segmenter Mask Transformer, ViT-B/16",
+      "pretrained": "vit_base_p16_384_20220308-96dfe169.pth",
+      "optimizer": "SGD recipe supplied by the pinned MMSegmentation config; stopped at the shared 80k budget",
+      "limitation": "The source recipe is 160k on ADE20K; only dataset and total budget are changed for the shared LoveDA comparison.",
+      "evidence": ["https://github.com/rstrudel/segmenter"]
+    },
+    "swin_upernet": {
+      "status": "audited_reproduction",
+      "display_name": "SwinUperNet",
+      "config": "configs/swin/swin-tiny-patch4-window7-in1k-pre_upernet_8xb2-160k_ade20k-512x512.py",
+      "variant": "UPerNet, Swin-T, ImageNet-1K pretrained",
+      "pretrained": "swin_tiny_patch4_window7_224_20220317-1cdeb081.pth",
+      "optimizer": "AdamW 6e-5, weight decay 0.01, layer/norm exclusions from official config",
+      "limitation": "The SCSM paper does not identify which Swin size was used; this run explicitly reports Swin-T.",
+      "evidence": ["https://github.com/SwinTransformer/Swin-Transformer-Semantic-Segmentation"]
+    },
+    "convnext": {
+      "status": "audited_reproduction",
+      "display_name": "ConvNeXt-UPerNet",
+      "config": "configs/convnext/convnext-tiny_upernet_8xb2-amp-160k_ade20k-512x512.py",
+      "variant": "UPerNet, ConvNeXt-Tiny, ImageNet-1K pretrained",
+      "pretrained": "convnext-tiny_3rdparty_32xb128-noema_in1k_20220301-795e9634.pth",
+      "optimizer": "AdamW 1e-4, weight decay 0.05, stage-wise decay from official config",
+      "limitation": "The SCSM paper does not identify which ConvNeXt size was used; this run explicitly reports Tiny.",
+      "evidence": ["https://github.com/facebookresearch/ConvNeXt"]
+    },
+    "poolformer": {
+      "status": "audited_reproduction",
+      "display_name": "PoolFormer",
+      "config": "configs/poolformer/fpn_poolformer_s12_8xb4-40k_ade20k-512x512.py",
+      "variant": "Semantic FPN, PoolFormer-S12, ImageNet-1K pretrained",
+      "pretrained": "poolformer-s12_3rdparty_32xb128_in1k_20220414-f8d83051.pth",
+      "optimizer": "AdamW 2e-4, weight decay 1e-4, poly 0.9 from official config; stopped at shared 80k budget",
+      "limitation": "The SCSM paper does not identify which PoolFormer size was used; this run explicitly reports S12.",
+      "evidence": ["https://github.com/sail-sg/poolformer"]
+    },
+    "farseg": {"status": "blocked", "reason": "Official SimpleCV code needs a separately audited LoveDA adapter and dependency lock.", "evidence": ["https://github.com/Z-Zheng/FarSeg"]},
+    "lanet": {"status": "blocked", "reason": "The released training code is dataset-specific and the exact LoveDA/Table-1 variant is not published.", "evidence": ["https://github.com/DingLei14/LANet"]},
+    "isnet": {"status": "blocked", "reason": "Exact LoveDA/Table-1 config and backbone variant are not identified in the SCSM paper.", "evidence": ["https://github.com/SegmentationBLWX/sssegmentation"]},
+    "manet": {"status": "blocked", "reason": "Official repository does not provide the exact LoveDA/Table-1 training recipe.", "evidence": ["https://github.com/lironui/Multi-Attention-Network"]},
+    "flanet": {"status": "blocked", "reason": "The publication's referenced official repository is unavailable; no auditable source snapshot is pinned.", "evidence": ["https://kevinlee09.github.io/media/papers/FLANet/FLANet.pdf"]},
+    "biformer": {"status": "blocked", "reason": "Official architecture exists, but the exact LoveDA/Table-1 variant and training recipe are not published.", "evidence": ["https://github.com/rayleizhu/BiFormer"]},
+    "efficientvit": {"status": "blocked", "reason": "Official segmentation models exist, but the exact LoveDA/Table-1 EfficientViT variant is not identified.", "evidence": ["https://github.com/mit-han-lab/efficientvit"]},
+    "ddp": {"status": "blocked", "reason": "Official code targets ADE20K; the exact LoveDA diffusion recipe used by the comparison is not published.", "evidence": ["https://github.com/JiYuanFeng/DDP"]},
+    "logcanpp": {"status": "blocked", "reason": "Current official LoveDA config uses RepViT-M2.3, while the compared Table-1 variant/backbone is not specified; silently choosing one would invalidate the row.", "evidence": ["https://github.com/xwmaxwma/rssegmentation"]},
+    "scsm": {"status": "blocked", "reason": "The authors' repository announces SCSM but currently publishes neither an SCSM implementation/config nor a LoveDA checkpoint.", "evidence": ["https://github.com/xwmaxwma/rssegmentation", "https://arxiv.org/abs/2501.13130"]}
+  }
+}
+
