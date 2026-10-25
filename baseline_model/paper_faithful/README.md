@@ -1,4 +1,4 @@
-# LoveDA paper-faithful baseline queue
+# LoveDA official-architecture, from-scratch baseline queue
 
 Đây là pipeline dùng cho bảng baseline có thể audit. Nó **không dùng** các decoder rút gọn trong
 `baseline_suite/models/zoo.py`.
@@ -9,20 +9,21 @@
 - Không chọn `best checkpoint` bằng Val, vì làm vậy sẽ dùng tập báo cáo để điều chỉnh mô hình.
 - Crop 512×512; scale ngẫu nhiên trong `[0.5, 0.75, 1.0, 1.25, 1.5]`; flip ngang, flip dọc và rotation.
 - Batch toàn cục hiệu dụng luôn bằng 16. Nếu OOM, micro-batch giảm và gradient accumulation tăng.
-- Kiến trúc, optimizer và pretrained backbone lấy từ exact public LoveDA config đã pin commit.
-- Chỉ được nạp checkpoint ImageNet của backbone. `load_from`, checkpoint segmentation và checkpoint
-  model đã train bởi tác giả đều bị cấm.
+- Kiến trúc và optimizer lấy từ public config đã pin commit.
+- Toàn bộ backbone và decoder khởi tạo ngẫu nhiên. Mọi `pretrained`, `init_cfg=Pretrained`,
+  `load_from`, checkpoint backbone và checkpoint segmentation đều bị xóa/cấm.
 - Mỗi run lưu config đã resolve, source-config hash, checkpoint hash, seed, môi trường, raw log và metric.
-- Pretrained checkpoint mới tải được băm rồi xóa sau từng model. Checkpoint 80k của chính run không bị xóa.
+- Không tải pretrained checkpoint. Checkpoint 80k do chính run tạo ra được giữ lại.
 
 Chi tiết và link bằng chứng nằm trong `recipes.json`.
 
-## Chế độ strict
+## Chế độ scratch
 
-- `official_exact`: có public LoveDA config tương ứng trong MMSegmentation: PSPNet-R50 và
-  DeepLabv3+-R50.
-- `skipped_no_exact_recipe` hoặc `blocked`: thiếu exact public LoveDA recipe, thiếu code, hoặc paper
-  không xác định chính xác backbone variant. Queue chỉ ghi lý do rồi bỏ qua; không có cờ để ép chạy.
+- `runnable_scratch`: có kiến trúc executable trong model zoo đã pin. Hiện gồm PSPNet-R50,
+  DeepLabv3+-R50, DANet-R50, Semantic FPN-R50, OCRNet-HRNetW48, Segmenter-ViT-B,
+  Swin-T-UPerNet, ConvNeXt-Tiny-UPerNet và PoolFormer-S12.
+- `blocked`: chưa tích hợp được code chính xác hoặc code/config không được công bố. Queue bỏ qua,
+  không tự viết implementation gần đúng.
 
 Kết quả ở đây là **LoveDA Val reproduction**. Table 1 của paper SCSM dùng LoveDA Test qua evaluation
 server, nên không được đặt hai con số cạnh nhau như thể cùng split.
@@ -31,8 +32,8 @@ server, nên không được đặt hai con số cạnh nhau như thể cùng sp
 
 Dùng một trong hai notebook:
 
-- `kaggle_paper_faithful_part1.ipynb`: chỉ train PSPNet-R50 và DeepLabv3+-R50.
-- `kaggle_paper_faithful_part2.ipynb`: audit 17 model còn lại và ghi trạng thái `blocked`; không train.
+- `kaggle_paper_faithful_part1.ipynb`: PSPNet, DeepLabv3+, DANet, Semantic FPN, OCRNet.
+- `kaggle_paper_faithful_part2.ipynb`: Segmenter, SwinUperNet, ConvNeXt-UPerNet, PoolFormer.
 
 Notebook tự dùng:
 
@@ -53,8 +54,10 @@ Chỉ chấp nhận run có:
 2. checkpoint đúng `iter_80000.pth` cùng SHA-256;
 3. `generated_config.py` và `provenance.json`;
 4. `test_val.log` và metrics đọc từ lần test checkpoint cuối;
-5. tên variant/fidelity được đưa nguyên văn vào bảng.
+5. `initialization=random_from_scratch` và danh sách `removed_pretrained_fields` trong provenance;
+6. tên variant/fidelity được đưa nguyên văn vào bảng.
 
 Nên chạy ba seed (ví dụ 2025, 42, 3407) và báo cáo mean ± standard deviation. Paper SCSM không công bố
-seed cho Table 1, vì vậy một run đơn chỉ nên được gọi là single-seed reproduction.
+seed cho Table 1, vì vậy một run đơn chỉ nên được gọi là single-seed reproduction. Các kết quả scratch
+phải nằm trong một bảng/cột riêng; không so trực tiếp như thể cùng chế độ ImageNet-pretrained của paper.
 
