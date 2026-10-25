@@ -218,14 +218,18 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
     model_root = args.output / model_name / f"seed_{args.seed}"
     status_path = model_root / "status.json"
     status = read_json(status_path, {})
-    if isinstance(status, dict) and status.get("state") == "complete":
+    if (
+        isinstance(status, dict)
+        and status.get("state") == "complete"
+        and status.get("initialization") == "random_from_scratch"
+    ):
         print(f"[{model_name}] already complete; skipping")
         return status
 
     recipe = manifest["models"].get(model_name)
     if recipe is None:
         return {"model": model_name, "state": "blocked", "reason": "unknown model"}
-    if recipe["status"] != "official_exact":
+    if recipe["status"] != "runnable_scratch":
         result = {
             "model": model_name,
             "state": "blocked",
@@ -367,6 +371,8 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
                 "state": "complete",
                 "fidelity": recipe["status"],
                 "variant": recipe.get("variant"),
+                "initialization": "random_from_scratch",
+                "removed_pretrained_fields": provenance["removed_pretrained_fields"],
                 "checkpoint": str(checkpoint),
                 "checkpoint_sha256": sha256(checkpoint),
                 "metrics": parse_metrics(run_dir, test_log),
