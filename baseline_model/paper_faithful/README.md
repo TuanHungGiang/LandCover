@@ -9,20 +9,20 @@
 - Không chọn `best checkpoint` bằng Val, vì làm vậy sẽ dùng tập báo cáo để điều chỉnh mô hình.
 - Crop 512×512; scale ngẫu nhiên trong `[0.5, 0.75, 1.0, 1.25, 1.5]`; flip ngang, flip dọc và rotation.
 - Batch toàn cục hiệu dụng luôn bằng 16. Nếu OOM, micro-batch giảm và gradient accumulation tăng.
-- Kiến trúc, optimizer và pretrained backbone lấy từ config chính thức đã pin commit.
+- Kiến trúc, optimizer và pretrained backbone lấy từ exact public LoveDA config đã pin commit.
+- Chỉ được nạp checkpoint ImageNet của backbone. `load_from`, checkpoint segmentation và checkpoint
+  model đã train bởi tác giả đều bị cấm.
 - Mỗi run lưu config đã resolve, source-config hash, checkpoint hash, seed, môi trường, raw log và metric.
 - Pretrained checkpoint mới tải được băm rồi xóa sau từng model. Checkpoint 80k của chính run không bị xóa.
 
 Chi tiết và link bằng chứng nằm trong `recipes.json`.
 
-## Mức fidelity
+## Chế độ strict
 
-- `verified_loveda`: có config LoveDA chính thức tương ứng trong MMSegmentation: PSPNet-R50 và
+- `official_exact`: có public LoveDA config tương ứng trong MMSegmentation: PSPNet-R50 và
   DeepLabv3+-R50.
-- `audited_reproduction`: kiến trúc/pretrained/optimizer chính thức, nhưng paper SCSM không công bố
-  chính xác variant dùng trong Table 1. Kết quả phải ghi đầy đủ variant như `Swin-T`, `ConvNeXt-Tiny`.
-- `blocked`: thiếu code/config/variant đủ để tạo một hàng có thể audit. Queue từ chối chạy thay vì dùng
-  implementation gần đúng.
+- `skipped_no_exact_recipe` hoặc `blocked`: thiếu exact public LoveDA recipe, thiếu code, hoặc paper
+  không xác định chính xác backbone variant. Queue chỉ ghi lý do rồi bỏ qua; không có cờ để ép chạy.
 
 Kết quả ở đây là **LoveDA Val reproduction**. Table 1 của paper SCSM dùng LoveDA Test qua evaluation
 server, nên không được đặt hai con số cạnh nhau như thể cùng split.
@@ -31,8 +31,8 @@ server, nên không được đặt hai con số cạnh nhau như thể cùng sp
 
 Dùng một trong hai notebook:
 
-- `kaggle_paper_faithful_part1.ipynb`: PSPNet, DeepLabv3+, DANet, Semantic FPN, OCRNet.
-- `kaggle_paper_faithful_part2.ipynb`: Segmenter, SwinUperNet, ConvNeXt-UPerNet, PoolFormer.
+- `kaggle_paper_faithful_part1.ipynb`: chỉ train PSPNet-R50 và DeepLabv3+-R50.
+- `kaggle_paper_faithful_part2.ipynb`: audit 17 model còn lại và ghi trạng thái `blocked`; không train.
 
 Notebook tự dùng:
 
