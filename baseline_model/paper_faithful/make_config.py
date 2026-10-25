@@ -31,6 +31,31 @@ def set_num_classes(value: object) -> None:
             set_num_classes(child)
 
 
+def remove_pretrained_initialization(value: object, path: str = "model") -> list[str]:
+    """Remove every model/backbone pretrained initializer in place."""
+    removed: list[str] = []
+    if isinstance(value, (dict, ConfigDict)):
+        if str(value.get("type", "")).lower() == "pretrained":
+            removed.append(path)
+            value.clear()
+            return removed
+        for key in list(value.keys()):
+            child_path = f"{path}.{key}"
+            if key == "pretrained" and value[key] not in (None, False):
+                removed.append(child_path)
+                value[key] = None
+            elif key == "init_cfg" and isinstance(value[key], (dict, ConfigDict)) \
+                    and str(value[key].get("type", "")).lower() == "pretrained":
+                removed.append(child_path)
+                value[key] = None
+            else:
+                removed.extend(remove_pretrained_initialization(value[key], child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            removed.extend(remove_pretrained_initialization(child, f"{path}[{index}]"))
+    return removed
+
+
 def set_scheduler_budget(schedulers: object, max_iters: int) -> None:
     if not isinstance(schedulers, (list, tuple)):
         return
@@ -54,12 +79,10 @@ def build_config(
     recipe = manifest["models"].get(model_name)
     if recipe is None:
         raise KeyError(f"Unknown model: {model_name}")
-    if recipe["status"] != "official_exact":
+    if recipe["status"] != "runnable_scratch":
         raise RuntimeError(
             f"{model_name} is {recipe['status']}: {recipe.get('reason') or recipe.get('limitation')}"
         )
-    if recipe.get("pretrained_scope") != "backbone_only":
-        raise RuntimeError(f"{model_name} does not declare a backbone-only pretrained checkpoint")
 
     effective_batch = int(manifest["protocol"]["effective_global_batch"])
     physical_global_batch = micro_batch * world_size
@@ -130,6 +153,11 @@ def build_config(
     if hasattr(cfg.model, "data_preprocessor"):
         cfg.model.data_preprocessor["size"] = crop
     set_num_classes(cfg.model)
+    removed_pretrained = remove_pretrained_initialization(cfg.model)
+    for key in ("checkpoint", "checkpoint_file", "pretrained_ckpt_path"):
+        if cfg.get(key) not in (None, False):
+            removed_pretrained.append(key)
+            cfg[key] = None
     cfg.model["test_cfg"] = dict(mode="slide", crop_size=crop, stride=crop)
 
     max_iters = 80000
@@ -143,8 +171,6 @@ def build_config(
     cfg.work_dir = str(work_dir)
     cfg.resume = False
     cfg.load_from = None
-    if cfg.get("pretrained_ckpt_path"):
-        raise RuntimeError("Task-level pretrained checkpoints are forbidden in strict mode")
     cfg.default_hooks["checkpoint"] = dict(
         type="CheckpointHook",
         by_epoch=False,
@@ -171,6 +197,8 @@ def build_config(
         "effective_global_batch": effective_batch,
         "max_iterations": max_iters,
         "seed": seed,
+        "initialization": "random_from_scratch",
+        "removed_pretrained_fields": removed_pretrained,
         "generated_config": str(output),
         "generated_config_sha256": sha256(output),
     }
