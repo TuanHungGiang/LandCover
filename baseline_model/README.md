@@ -4,8 +4,8 @@
 > `kaggle_train_part2.ipynb` dùng model chuẩn hóa/rút gọn để thử pipeline, **không được dùng số liệu
 > của chúng trong bảng baseline công bố**. Với thí nghiệm có thể audit, dùng các notebook trong
 > `paper_faithful/` và đọc `paper_faithful/README.md`.
-> Chế độ strict hiện chỉ cho chạy PSPNet-R50 và DeepLabv3+-R50; mọi model thiếu exact public LoveDA
-> recipe/backbone đều được bỏ qua, không thay bằng implementation gần đúng.
+> Chế độ scratch hiện chạy 9 kiến trúc đã tích hợp và xóa toàn bộ pretrained initialization trước khi
+> dựng model. Model chưa có code/config executable chính xác vẫn được bỏ qua, không thay bằng bản gần đúng.
 
 Thư mục này cung cấp **một pipeline train/evaluate chung** cho 19 tên model trong bảng baseline.
 
