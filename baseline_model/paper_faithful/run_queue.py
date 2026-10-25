@@ -221,7 +221,7 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
     if (
         isinstance(status, dict)
         and status.get("state") == "complete"
-        and status.get("initialization") == "random_from_scratch"
+        and status.get("initialization") == "backbone_pretrained"
     ):
         print(f"[{model_name}] already complete; skipping")
         return status
@@ -229,7 +229,7 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
     recipe = manifest["models"].get(model_name)
     if recipe is None:
         return {"model": model_name, "state": "blocked", "reason": "unknown model"}
-    if recipe["status"] != "runnable_scratch":
+    if recipe["status"] != "runnable_backbone_pretrained":
         result = {
             "model": model_name,
             "state": "blocked",
@@ -371,8 +371,8 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
                 "state": "complete",
                 "fidelity": recipe["status"],
                 "variant": recipe.get("variant"),
-                "initialization": "random_from_scratch",
-                "removed_pretrained_fields": provenance["removed_pretrained_fields"],
+                "initialization": "backbone_pretrained",
+                "backbone_pretrained_fields": provenance["backbone_pretrained_fields"],
                 "checkpoint": str(checkpoint),
                 "checkpoint_sha256": sha256(checkpoint),
                 "metrics": parse_metrics(run_dir, test_log),
