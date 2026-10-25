@@ -225,10 +225,7 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
     recipe = manifest["models"].get(model_name)
     if recipe is None:
         return {"model": model_name, "state": "blocked", "reason": "unknown model"}
-    allowed = {"verified_loveda"}
-    if args.allow_audited:
-        allowed.add("audited_reproduction")
-    if recipe["status"] not in allowed:
+    if recipe["status"] != "official_exact":
         result = {
             "model": model_name,
             "state": "blocked",
@@ -267,7 +264,6 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
                 micro_batch,
                 world_size,
                 args.seed,
-                args.allow_audited,
             )
             checkpoint = find_final_checkpoint(run_dir)
             if checkpoint is None or checkpoint.name != "iter_80000.pth":
@@ -281,7 +277,6 @@ def run_one(args: argparse.Namespace, model_name: str, manifest: dict[str, objec
                     micro_batch,
                     world_size,
                     args.seed,
-                    args.allow_audited,
                 )
                 probe_command = command_for(args.mmseg_root, probe_config, world_size)
                 probe_command += [
@@ -436,7 +431,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--gpus", type=int, default=1)
-    parser.add_argument("--allow-audited", action="store_true")
     return parser.parse_args()
 
 
