@@ -19,16 +19,16 @@
   "implementation": {
     "repository": "https://github.com/open-mmlab/mmsegmentation.git",
     "commit": "b040e147adfa027bbc071b624bedf0ae84dfc922",
-    "note": "Scratch mode: runnable architectures are initialized randomly. No backbone, segmentation, or task checkpoint is loaded."
+    "note": "Backbone-pretrained mode: use the ImageNet backbone initialization declared by each pinned public config. Never load a segmentation/task checkpoint."
   },
   "models": {
     "pspnet": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "PSPNet",
       "config": "configs/pspnet/pspnet_r50-d8_4xb4-80k_loveda-512x512.py",
       "variant": "PSPNet, ResNet-50-v1c, output stride 8",
       "pretrained": "open-mmlab://resnet50_v1c",
-      "initialization": "random (all pretrained fields are removed at config generation time)",
+      "initialization": "ImageNet pretrained ResNet-50-v1c backbone; segmentation heads are random",
       "optimizer": "SGD from MMSegmentation 80k schedule",
       "evidence": [
         "https://github.com/hszhao/semseg",
@@ -36,12 +36,12 @@
       ]
     },
     "deeplabv3plus": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "DeepLabv3+",
       "config": "configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb4-80k_loveda-512x512.py",
       "variant": "DeepLabv3+, ResNet-50-v1c, output stride 8",
       "pretrained": "open-mmlab://resnet50_v1c",
-      "initialization": "random (all pretrained fields are removed at config generation time)",
+      "initialization": "ImageNet pretrained ResNet-50-v1c backbone; segmentation heads are random",
       "optimizer": "SGD from MMSegmentation 80k schedule",
       "evidence": [
         "https://github.com/tensorflow/models/tree/master/research/deeplab",
@@ -49,73 +49,73 @@
       ]
     },
     "danet": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "DANet",
       "config": "configs/danet/danet_r50-d8_4xb4-80k_ade20k-512x512.py",
       "variant": "DANet, ResNet-50-v1c, output stride 8",
       "pretrained": "open-mmlab://resnet50_v1c",
       "optimizer": "SGD from official MMSegmentation DANet recipe",
-      "protocol_note": "Architecture/optimizer come from the public DANet config; training uses the unified LoveDA scratch protocol, not the Table-1 pretrained setting.",
+      "protocol_note": "Architecture, optimizer and ImageNet backbone initialization come from the pinned DANet config; LoveDA uses the shared 80k protocol.",
       "evidence": ["https://github.com/CASIA-IVA-Lab/DANet"]
     },
     "semantic_fpn": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "Semantic FPN",
       "config": "configs/sem_fpn/fpn_r50_4xb2-80k_cityscapes-512x1024.py",
       "variant": "Semantic FPN, ResNet-50-v1c",
       "pretrained": "open-mmlab://resnet50_v1c",
       "optimizer": "SGD from official MMSegmentation Semantic FPN recipe",
-      "protocol_note": "Architecture/optimizer come from the public Semantic FPN config; training uses the unified LoveDA scratch protocol.",
+      "protocol_note": "Architecture, optimizer and ImageNet backbone initialization come from the pinned Semantic FPN config; LoveDA uses the shared 80k protocol.",
       "evidence": ["https://github.com/open-mmlab/mmsegmentation/tree/b040e147adfa027bbc071b624bedf0ae84dfc922/configs/sem_fpn"]
     },
     "ocrnet": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "OCRNet",
       "config": "configs/ocrnet/ocrnet_hr48_4xb4-80k_ade20k-512x512.py",
       "variant": "OCRNet, HRNetV2-W48",
       "pretrained": "open-mmlab://msra/hrnetv2_w48",
       "optimizer": "SGD from official MMSegmentation OCRNet recipe",
-      "protocol_note": "Architecture/optimizer come from the public OCRNet-HRNetW48 config; training uses the unified LoveDA scratch protocol.",
+      "protocol_note": "Architecture, optimizer and ImageNet HRNet-W48 initialization come from the pinned OCRNet config; LoveDA uses the shared 80k protocol.",
       "evidence": ["https://github.com/openseg-group/openseg.pytorch"]
     },
     "segmenter": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "Segmenter",
       "config": "configs/segmenter/segmenter_vit-b_mask_8xb1-160k_ade20k-512x512.py",
       "variant": "Segmenter Mask Transformer, ViT-B/16",
       "pretrained": "vit_base_p16_384_20220308-96dfe169.pth",
       "optimizer": "SGD recipe supplied by the pinned MMSegmentation config; stopped at the shared 80k budget",
-      "protocol_note": "Architecture/optimizer come from the public Segmenter ViT-B config; training uses the unified LoveDA scratch protocol.",
+      "protocol_note": "Architecture, optimizer and pretrained ViT-B backbone come from the pinned Segmenter config; LoveDA uses the shared 80k protocol.",
       "evidence": ["https://github.com/rstrudel/segmenter"]
     },
     "swin_upernet": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "SwinUperNet",
       "config": "configs/swin/swin-tiny-patch4-window7-in1k-pre_upernet_8xb2-160k_ade20k-512x512.py",
       "variant": "UPerNet, Swin-T, ImageNet-1K pretrained",
       "pretrained": "swin_tiny_patch4_window7_224_20220317-1cdeb081.pth",
       "optimizer": "AdamW 6e-5, weight decay 0.01, layer/norm exclusions from official config",
-      "protocol_note": "Architecture/optimizer come from the public Swin-T UPerNet config; training uses the unified LoveDA scratch protocol.",
+      "protocol_note": "Architecture, optimizer and ImageNet Swin-T initialization come from the pinned UPerNet config; LoveDA uses the shared 80k protocol.",
       "evidence": ["https://github.com/SwinTransformer/Swin-Transformer-Semantic-Segmentation"]
     },
     "convnext": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "ConvNeXt-UPerNet",
       "config": "configs/convnext/convnext-tiny_upernet_8xb2-amp-160k_ade20k-512x512.py",
       "variant": "UPerNet, ConvNeXt-Tiny, ImageNet-1K pretrained",
       "pretrained": "convnext-tiny_3rdparty_32xb128-noema_in1k_20220301-795e9634.pth",
       "optimizer": "AdamW 1e-4, weight decay 0.05, stage-wise decay from official config",
-      "protocol_note": "Architecture/optimizer come from the public ConvNeXt-Tiny UPerNet config; training uses the unified LoveDA scratch protocol.",
+      "protocol_note": "Architecture, optimizer and ImageNet ConvNeXt-Tiny initialization come from the pinned UPerNet config; LoveDA uses the shared 80k protocol.",
       "evidence": ["https://github.com/facebookresearch/ConvNeXt"]
     },
     "poolformer": {
-      "status": "runnable_scratch",
+      "status": "runnable_backbone_pretrained",
       "display_name": "PoolFormer",
       "config": "configs/poolformer/fpn_poolformer_s12_8xb4-40k_ade20k-512x512.py",
       "variant": "Semantic FPN, PoolFormer-S12, ImageNet-1K pretrained",
       "pretrained": "poolformer-s12_3rdparty_32xb128_in1k_20220414-f8d83051.pth",
       "optimizer": "AdamW 2e-4, weight decay 1e-4, poly 0.9 from official config; stopped at shared 80k budget",
-      "protocol_note": "Architecture/optimizer come from the public PoolFormer-S12 config; training uses the unified LoveDA scratch protocol.",
+      "protocol_note": "Architecture, optimizer and ImageNet PoolFormer-S12 initialization come from the pinned config; LoveDA uses the shared 80k protocol.",
       "evidence": ["https://github.com/sail-sg/poolformer"]
     },
     "farseg": {"status": "blocked", "reason": "Official SimpleCV code needs a separately audited LoveDA adapter and dependency lock.", "evidence": ["https://github.com/Z-Zheng/FarSeg"]},
