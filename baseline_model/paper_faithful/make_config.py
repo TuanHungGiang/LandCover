@@ -49,19 +49,17 @@ def build_config(
     micro_batch: int,
     world_size: int,
     seed: int,
-    allow_audited: bool,
 ) -> dict[str, object]:
     manifest = json.loads((HERE / "recipes.json").read_text(encoding="utf-8"))
     recipe = manifest["models"].get(model_name)
     if recipe is None:
         raise KeyError(f"Unknown model: {model_name}")
-    allowed = {"verified_loveda"}
-    if allow_audited:
-        allowed.add("audited_reproduction")
-    if recipe["status"] not in allowed:
+    if recipe["status"] != "official_exact":
         raise RuntimeError(
             f"{model_name} is {recipe['status']}: {recipe.get('reason') or recipe.get('limitation')}"
         )
+    if recipe.get("pretrained_scope") != "backbone_only":
+        raise RuntimeError(f"{model_name} does not declare a backbone-only pretrained checkpoint")
 
     effective_batch = int(manifest["protocol"]["effective_global_batch"])
     physical_global_batch = micro_batch * world_size
@@ -145,6 +143,8 @@ def build_config(
     cfg.work_dir = str(work_dir)
     cfg.resume = False
     cfg.load_from = None
+    if cfg.get("pretrained_ckpt_path"):
+        raise RuntimeError("Task-level pretrained checkpoints are forbidden in strict mode")
     cfg.default_hooks["checkpoint"] = dict(
         type="CheckpointHook",
         by_epoch=False,
@@ -190,7 +190,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--micro-batch", type=int, required=True)
     parser.add_argument("--world-size", type=int, required=True)
     parser.add_argument("--seed", type=int, default=2025)
-    parser.add_argument("--allow-audited", action="store_true")
     return parser.parse_args()
 
 
@@ -205,7 +204,6 @@ if __name__ == "__main__":
         args.micro_batch,
         args.world_size,
         args.seed,
-        args.allow_audited,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
